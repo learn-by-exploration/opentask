@@ -153,6 +153,7 @@ class AgentRunner:
             logger.debug("Command: %s (prompt: %.40s)", argv[0], safe_prompt)
             process = await asyncio.create_subprocess_exec(
                 *argv,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=cwd,
