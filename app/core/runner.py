@@ -53,7 +53,7 @@ class AgentRunner:
     @staticmethod
     def _is_allowed_dir(real_path: str) -> bool:
         """Check if a resolved path is under an allowed project directory."""
-        for allowed in settings.allowed_project_dirs:
+        for allowed in settings.allowed_project_dirs_list:
             allowed_real = os.path.realpath(os.path.expanduser(allowed))
             if real_path == allowed_real or real_path.startswith(allowed_real + os.sep):
                 return True

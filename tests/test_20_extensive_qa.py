@@ -804,13 +804,13 @@ class TestQA13RunnerValidation:
     """Runner validation before execution."""
 
     def test_runner_is_allowed_dir_with_tmp(self, monkeypatch):
-        monkeypatch.setattr("app.config.settings.settings.allowed_project_dirs", ["/tmp"])
+        monkeypatch.setattr("app.config.settings.settings.allowed_project_dirs", "/tmp")
         from app.core.runner import AgentRunner
         r = AgentRunner()
         assert r._is_allowed_dir("/tmp/project") is True
 
     def test_runner_rejects_outside_dir(self, monkeypatch):
-        monkeypatch.setattr("app.config.settings.settings.allowed_project_dirs", ["/home/user"])
+        monkeypatch.setattr("app.config.settings.settings.allowed_project_dirs", "/home/user")
         from app.core.runner import AgentRunner
         r = AgentRunner()
         assert r._is_allowed_dir("/etc/passwd") is False

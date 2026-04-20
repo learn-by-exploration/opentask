@@ -20,7 +20,7 @@ class Settings(BaseSettings):
         "aider": "aider --message {prompt} --yes --no-git",
     }
 
-    allowed_project_dirs: list[str] = ["~/ai", "~/repos", "~/projects"]
+    allowed_project_dirs: str = "~/ai,~/repos,~/projects"
 
     task_timeout_seconds: int = 1800
     max_queue_size: int = 20
@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     @property
     def db_url(self) -> str:
         return f"sqlite+aiosqlite:///{self.db_path}"
+
+    @property
+    def allowed_project_dirs_list(self) -> list[str]:
+        v = self.allowed_project_dirs
+        if isinstance(v, list):
+            return v
+        return [d.strip() for d in v.split(",") if d.strip()]
 
 
 settings = Settings()

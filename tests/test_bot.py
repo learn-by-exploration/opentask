@@ -361,14 +361,16 @@ class TestCmdCancel:
 
 class TestCmdProject:
     @patch("app.telegram.bot.set_chat_pref", new_callable=AsyncMock)
-    async def test_set_valid_dir(self, mock_set_pref):
+    async def test_set_valid_dir(self, mock_set_pref, monkeypatch, tmp_path):
+        monkeypatch.setattr("app.telegram.bot.settings.allowed_project_dirs", str(tmp_path))
         update = _make_update()
-        await cmd_project(update, _make_context(args=["~/ai"]))
+        await cmd_project(update, _make_context(args=[str(tmp_path)]))
         text = update.get_bot().send_message.call_args.kwargs["text"]
-        assert "ai" in text
+        assert str(tmp_path) in text
         assert "set to" in text.lower()
 
-    async def test_set_invalid_dir(self):
+    async def test_set_invalid_dir(self, monkeypatch):
+        monkeypatch.setattr("app.telegram.bot.settings.allowed_project_dirs", "~/ai,~/repos")
         update = _make_update()
         await cmd_project(update, _make_context(args=["~/ai/nonexistent_abcxyz"]))
         text = update.get_bot().send_message.call_args.kwargs["text"]
@@ -390,13 +392,15 @@ class TestCmdProject:
 # ── _is_allowed_project_dir ─────────────────────────────────────────
 
 class TestIsAllowedProjectDir:
-    def test_allowed_path(self):
+    def test_allowed_path(self, monkeypatch):
+        monkeypatch.setattr("app.telegram.bot.settings.allowed_project_dirs", "~/ai,~/repos")
         assert _is_allowed_project_dir("~/ai/myproject") is True
 
     def test_disallowed_path(self):
         assert _is_allowed_project_dir("/etc/passwd") is False
 
-    def test_exact_match(self):
+    def test_exact_match(self, monkeypatch):
+        monkeypatch.setattr("app.telegram.bot.settings.allowed_project_dirs", "~/ai,~/repos")
         assert _is_allowed_project_dir("~/ai") is True
 
 

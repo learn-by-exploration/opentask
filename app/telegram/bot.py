@@ -107,7 +107,7 @@ def _status_emoji(status: TaskStatus) -> str:
 def _is_allowed_project_dir(path: str) -> bool:
     expanded = os.path.expanduser(path)
     real = os.path.realpath(expanded)
-    for allowed in settings.allowed_project_dirs:
+    for allowed in settings.allowed_project_dirs_list:
         allowed_real = os.path.realpath(os.path.expanduser(allowed))
         if real == allowed_real or real.startswith(allowed_real + os.sep):
             return True
@@ -331,7 +331,7 @@ async def cmd_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if context.args:
         path = context.args[0]
         if not _is_allowed_project_dir(path):
-            await _send(update, f"⚠️ Directory not in allowed paths. Allowed: {', '.join(settings.allowed_project_dirs)}")
+            await _send(update, f"⚠️ Directory not in allowed paths. Allowed: {', '.join(settings.allowed_project_dirs_list)}")
             return
         expanded = os.path.expanduser(path)
         if not os.path.isdir(expanded):
