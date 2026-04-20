@@ -570,14 +570,21 @@ class TestCmdChains:
 
 class TestHandleText:
     @patch("app.telegram.bot.get_chat_prefs", new_callable=AsyncMock, return_value={"project_dir": None, "agent": None})
-    async def test_enqueue_shows_agent_picker(self, mock_prefs):
+    @patch("app.telegram.bot.enqueue_task", new_callable=AsyncMock)
+    async def test_enqueue_auto_queues_with_default(self, mock_enqueue, mock_prefs):
+        mock_task = MagicMock()
+        mock_task.id = 1
+        mock_task.agent = "opencode"
+        mock_task.project_dir = "/home/user/project"
+        mock_enqueue.return_value = mock_task
         update = _make_update(text="fix the login page")
         ctx = _make_context()
         await handle_text(update, ctx)
+        mock_enqueue.assert_called_once()
         update.message.reply_text.assert_called_once()
-        call_kwargs = update.message.reply_text.call_args.kwargs
-        assert "reply_markup" in call_kwargs
-        assert ctx.user_data["pending_prompt"] == "fix the login page"
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "Queued #1" in call_text
+        assert "opencode" in call_text
 
     @patch("app.telegram.bot.get_chat_prefs", new_callable=AsyncMock, return_value={"project_dir": None, "agent": None})
     async def test_empty_text_ignored(self, mock_prefs):
@@ -596,28 +603,12 @@ class TestHandleText:
     @patch("app.telegram.bot.get_chat_prefs", new_callable=AsyncMock, return_value={"project_dir": None, "agent": None})
     @patch("app.telegram.bot.enqueue_task", new_callable=AsyncMock, side_effect=ValueError("full"))
     async def test_queue_full_shows_error(self, mock_enqueue, mock_prefs):
-        from app.telegram.bot import handle_agent_callback
-        # First send text to get pending prompt
         update = _make_update(text="do something")
         ctx = _make_context()
         await handle_text(update, ctx)
-        # Now simulate callback button press
-        cb_update = MagicMock()
-        cb_update.effective_user = MagicMock()
-        cb_update.effective_user.id = 12345
-        cb_update.effective_chat = MagicMock()
-        cb_update.effective_chat.id = 12345
-        cb_update.callback_query = AsyncMock()
-        cb_update.callback_query.data = "run:opencode"
-        cb_update.callback_query.answer = AsyncMock()
-        cb_update.callback_query.edit_message_text = AsyncMock()
-        cb_update.callback_query.message = MagicMock()
-        cb_update.callback_query.message.message_id = 1
-        cb_update.get_bot = MagicMock(return_value=AsyncMock())
-        await handle_agent_callback(cb_update, ctx)
-        cb_update.callback_query.edit_message_text.assert_called()
-        last_text = cb_update.callback_query.edit_message_text.call_args[0][0]
-        assert "full" in last_text.lower() or "Queue" in last_text
+        bot = update.get_bot()
+        text = bot.send_message.call_args.kwargs["text"]
+        assert "full" in text.lower() or "Queue" in text
 
 
 # ── _load_prefs ──────────────────────────────────────────────────────
@@ -997,28 +988,12 @@ class TestHandleTextException:
     @patch("app.telegram.bot.get_chat_prefs", new_callable=AsyncMock, return_value={"project_dir": None, "agent": None})
     @patch("app.telegram.bot.enqueue_task", new_callable=AsyncMock, side_effect=RuntimeError("DB down"))
     async def test_handle_text_generic_exception(self, mock_enqueue, mock_prefs):
-        from app.telegram.bot import handle_agent_callback
-        # First send text to get pending prompt
         update = _make_update(text="do something")
         ctx = _make_context()
         await handle_text(update, ctx)
-        # Now simulate callback button press
-        cb_update = MagicMock()
-        cb_update.effective_user = MagicMock()
-        cb_update.effective_user.id = 12345
-        cb_update.effective_chat = MagicMock()
-        cb_update.effective_chat.id = 12345
-        cb_update.callback_query = AsyncMock()
-        cb_update.callback_query.data = "run:opencode"
-        cb_update.callback_query.answer = AsyncMock()
-        cb_update.callback_query.edit_message_text = AsyncMock()
-        cb_update.callback_query.message = MagicMock()
-        cb_update.callback_query.message.message_id = 1
-        cb_update.get_bot = MagicMock(return_value=AsyncMock())
-        await handle_agent_callback(cb_update, ctx)
-        cb_update.callback_query.edit_message_text.assert_called()
-        last_text = cb_update.callback_query.edit_message_text.call_args[0][0]
-        assert "Failed to queue task" in last_text
+        bot = update.get_bot()
+        text = bot.send_message.call_args.kwargs["text"]
+        assert "Failed to queue task" in text
 
 
 # ── build_app ────────────────────────────────────────────────────────

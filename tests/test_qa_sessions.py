@@ -684,8 +684,8 @@ class TestSession16Regression:
     """Regression: re-test previously found and fixed bugs."""
 
     @pytest.mark.asyncio
-    async def test_handle_text_shows_agent_picker(self, fresh_db):
-        """Regression: handle_text shows inline agent picker buttons."""
+    async def test_handle_text_auto_queues(self, fresh_db):
+        """Regression: handle_text auto-queues with default agent."""
         from app.telegram.bot import handle_text
 
         update = MagicMock()
@@ -695,8 +695,9 @@ class TestSession16Regression:
         update.effective_chat.id = 12345
         update.message = MagicMock()
         update.message.text = "fix the bug"
+        update.message.message_id = 42
         msg = AsyncMock()
-        msg.message_id = 42
+        msg.message_id = 43
         update.message.reply_text = AsyncMock(return_value=msg)
         bot = AsyncMock()
         bot.send_message = AsyncMock()
@@ -707,11 +708,10 @@ class TestSession16Regression:
         ctx.user_data = {}
         await handle_text(update, ctx)
 
-        # Should show agent picker with reply_markup
+        # Should auto-queue and show confirmation
         update.message.reply_text.assert_called_once()
-        call_kwargs = update.message.reply_text.call_args.kwargs
-        assert "reply_markup" in call_kwargs
-        assert ctx.user_data["pending_prompt"] == "fix the bug"
+        call_text = update.message.reply_text.call_args[0][0]
+        assert "Queued" in call_text
 
     @pytest.mark.asyncio
     async def test_complete_cancelled_returns_existing(self, fresh_db):

@@ -39,6 +39,7 @@ from app.core.broker import (
     save_chain,
     set_chat_pref,
     start_chain,
+    switch_task_agent,
 )
 from app.core.models import ChainStatus, Task, TaskStatus
 
@@ -633,7 +634,7 @@ def _sanitize_text(text: str) -> str:
 
 @auth_required
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Any plain text message shows agent picker, then queues on selection."""
+    """Any plain text → auto-queue with default agent, show switch buttons."""
     await _load_prefs(_chat_id(update))
     prompt = _sanitize_text(update.message.text or "")  # type: ignore[union-attr]
     if not prompt:
@@ -644,75 +645,81 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     chat_id = _chat_id(update)
     current_agent = _agent(chat_id)
-    agents = list(settings.agent_commands.keys())
-
-    # Build inline keyboard: one button per agent, current agent marked with ✓
-    buttons = []
-    for name in agents:
-        label = f"✓ {name}" if name == current_agent else name
-        buttons.append(InlineKeyboardButton(label, callback_data=f"run:{name}"))
-
-    keyboard = InlineKeyboardMarkup([buttons])
-
-    # Store prompt in context for callback
-    msg = await update.message.reply_text(  # type: ignore[union-attr]
-        f"🤖 Pick agent for this task:\n\n_{prompt[:200]}_",
-        reply_markup=keyboard,
-        parse_mode=ParseMode.MARKDOWN,
-    )
-    # Save prompt + message id so the callback can queue it
-    context.user_data["pending_prompt"] = prompt  # type: ignore[index]
-    context.user_data["pending_chat_id"] = chat_id  # type: ignore[index]
-    context.user_data["pending_msg_id"] = msg.message_id  # type: ignore[index]
-
-
-@auth_required
-async def handle_agent_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle inline button press to queue task with chosen agent."""
-    query = update.callback_query
-    await query.answer()  # type: ignore[union-attr]
-
-    data = query.data or ""  # type: ignore[union-attr]
-    if not data.startswith("run:"):
-        return
-
-    agent = data[4:]
-    if agent not in settings.agent_commands:
-        await query.edit_message_text("❓ Unknown agent.")  # type: ignore[union-attr]
-        return
-
-    prompt = context.user_data.get("pending_prompt")  # type: ignore[union-attr]
-    chat_id = context.user_data.get("pending_chat_id", _chat_id(update))  # type: ignore[union-attr]
-
-    if not prompt:
-        await query.edit_message_text("⚠️ No pending task. Send a new message.")  # type: ignore[union-attr]
-        return
-
-    # Clear pending state
-    context.user_data.pop("pending_prompt", None)  # type: ignore[union-attr]
-    context.user_data.pop("pending_chat_id", None)  # type: ignore[union-attr]
-    context.user_data.pop("pending_msg_id", None)  # type: ignore[union-attr]
-
-    await query.edit_message_text("📋 Queuing…")  # type: ignore[union-attr]
 
     try:
         task = await enqueue_task(
             prompt=prompt,
             project_dir=_project_dir(chat_id),
-            agent=agent,
+            agent=current_agent,
             chat_id=chat_id,
-            msg_id=query.message.message_id,  # type: ignore[union-attr]
+            msg_id=update.message.message_id,  # type: ignore[union-attr]
         )
     except ValueError:
-        await query.edit_message_text("⚠️ Queue is full. Wait for tasks to complete.")  # type: ignore[union-attr]
+        await _send(update, "⚠️ Queue is full. Wait for tasks to complete.")
         return
     except Exception:
         logger.exception("Failed to enqueue task")
-        await query.edit_message_text("⚠️ Failed to queue task. Check server logs.")  # type: ignore[union-attr]
+        await _send(update, "⚠️ Failed to queue task. Check server logs.")
         return
 
     project_display = task.project_dir.replace(os.path.expanduser('~'), '~')
-    await query.edit_message_text(f"📋 Queued #{task.id} ({task.agent}) in {project_display}")  # type: ignore[union-attr]
+
+    # Build switch buttons for other agents
+    other_agents = [a for a in settings.agent_commands if a != current_agent]
+    if other_agents:
+        buttons = [
+            InlineKeyboardButton(f"↻ {name}", callback_data=f"switch:{task.id}:{name}")
+            for name in other_agents
+        ]
+        keyboard = InlineKeyboardMarkup([buttons])
+        await update.message.reply_text(  # type: ignore[union-attr]
+            f"📋 Queued #{task.id} (`{task.agent}`) in `{project_display}`\n"
+            f"_Switch agent before it starts:_",
+            reply_markup=keyboard,
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    else:
+        await update.message.reply_text(  # type: ignore[union-attr]
+            f"📋 Queued #{task.id} (`{task.agent}`) in `{project_display}`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+
+@auth_required
+async def handle_agent_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle inline button press to switch agent on a pending task."""
+    query = update.callback_query
+    await query.answer()  # type: ignore[union-attr]
+
+    data = query.data or ""  # type: ignore[union-attr]
+    if not data.startswith("switch:"):
+        return
+
+    # Parse switch:<task_id>:<agent_name>
+    parts = data.split(":", 2)
+    if len(parts) != 3:
+        return
+    try:
+        task_id = int(parts[1])
+    except ValueError:
+        return
+    new_agent = parts[2]
+
+    if new_agent not in settings.agent_commands:
+        await query.edit_message_text("❓ Unknown agent.")  # type: ignore[union-attr]
+        return
+
+    updated = await switch_task_agent(task_id, new_agent)
+    if updated:
+        project_display = updated.project_dir.replace(os.path.expanduser('~'), '~')
+        await query.edit_message_text(  # type: ignore[union-attr]
+            f"📋 Switched #{updated.id} → `{updated.agent}` in `{project_display}`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    else:
+        await query.edit_message_text(  # type: ignore[union-attr]
+            f"⚠️ Task #{task_id} already started or not found — can't switch."
+        )
 
 
 # ── Build the Application ───────────────────────────────────────────
@@ -744,6 +751,6 @@ def build_app(runner=None) -> Application:
     app.add_handler(CommandHandler("chains", cmd_chains))
     app.add_handler(CommandHandler("delchain", cmd_delchain))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    app.add_handler(CallbackQueryHandler(handle_agent_callback, pattern=r"^run:"))
+    app.add_handler(CallbackQueryHandler(handle_agent_callback, pattern=r"^switch:"))
 
     return app

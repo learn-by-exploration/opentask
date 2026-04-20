@@ -240,7 +240,7 @@ class TestReadOutputEdgeCases:
         )
         task = _make_task(telegram_chat_id=123)
         # Should not raise
-        raw = await runner._read_output(proc, task)
+        raw, _stderr = await runner._read_output(proc, task)
         assert b"hello" in raw
 
 

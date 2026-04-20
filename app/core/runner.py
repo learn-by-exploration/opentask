@@ -155,7 +155,7 @@ class AgentRunner:
                 *argv,
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
+                stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
                 env=self._safe_env(),
                 start_new_session=True,
@@ -163,7 +163,7 @@ class AgentRunner:
             self._current_process = process
 
             try:
-                raw_output = await asyncio.wait_for(
+                raw_output, raw_stderr = await asyncio.wait_for(
                     self._read_output(process, task),
                     timeout=settings.task_timeout_seconds,
                 )
@@ -183,8 +183,13 @@ class AgentRunner:
                 except asyncio.TimeoutError:
                     process.kill()
                 raw_output = partial + b"\n\nTIMEOUT: task exceeded time limit"
+                raw_stderr = b""
 
-            output = raw_output[:MAX_OUTPUT_BYTES].decode("utf-8", errors="replace")
+            # Combine stdout + stderr for the full picture
+            combined = raw_output
+            if raw_stderr:
+                combined = raw_output + b"\n" + raw_stderr
+            output = combined[:MAX_OUTPUT_BYTES].decode("utf-8", errors="replace")
             exit_code = process.returncode if process.returncode is not None else -1
             summary = self._summarize(output, exit_code)
 
@@ -215,13 +220,25 @@ class AgentRunner:
 
     async def _read_output(
         self, process: asyncio.subprocess.Process, task: Task,
-    ) -> bytes:
-        """Read stdout line-by-line, sending progress updates periodically."""
+    ) -> tuple[bytes, bytes]:
+        """Read stdout line-by-line (with progress updates) and drain stderr.
+
+        Returns (stdout_bytes, stderr_bytes).
+        """
         chunks: list[bytes] = []
         total = 0
         last_progress = time.monotonic()
         recent_lines: list[str] = []
         interval = settings.progress_interval_seconds
+
+        async def _drain_stderr() -> bytes:
+            """Read all stderr in the background."""
+            if process.stderr is None:
+                return b""
+            data = await process.stderr.read(MAX_OUTPUT_BYTES)
+            return data or b""
+
+        stderr_task = asyncio.create_task(_drain_stderr())
 
         while True:
             line = await process.stdout.readline()
@@ -254,7 +271,8 @@ class AgentRunner:
                         pass
 
         await process.wait()
-        return b"".join(chunks)[:MAX_OUTPUT_BYTES]
+        stderr_data = await stderr_task
+        return b"".join(chunks)[:MAX_OUTPUT_BYTES], stderr_data[:MAX_OUTPUT_BYTES]
 
     def _build_command(self, task: Task) -> list[str]:
         """Build the command argv list from agent_commands template.

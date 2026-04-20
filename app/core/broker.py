@@ -71,6 +71,22 @@ async def enqueue_task(
     return task
 
 
+async def switch_task_agent(task_id: int, new_agent: str) -> Task | None:
+    """Switch the agent for a PENDING task. Returns updated task or None."""
+    session = await get_session()
+    async with session, session.begin():
+        result = await session.execute(
+            select(Task).where(Task.id == task_id, Task.status == TaskStatus.PENDING)
+        )
+        task = result.scalar_one_or_none()
+        if task is None:
+            return None
+        task.agent = new_agent
+        await session.flush()
+        await session.refresh(task)
+        return task
+
+
 async def pick_next_task() -> Task | None:
     """Pick the oldest PENDING task and mark it RUNNING."""
     session = await get_session()

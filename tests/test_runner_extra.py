@@ -557,7 +557,7 @@ class TestReadOutput:
             cwd=str(tmp_path),
         )
         task = _make_task(telegram_chat_id=123)
-        raw = await runner._read_output(proc, task)
+        raw, _stderr = await runner._read_output(proc, task)
         text = raw.decode()
         assert "line1" in text
         assert "line3" in text
@@ -609,7 +609,7 @@ class TestReadOutput:
             cwd=str(tmp_path),
         )
         task = _make_task(telegram_chat_id=123)
-        raw = await runner._read_output(proc, task)
+        raw, _stderr = await runner._read_output(proc, task)
         assert b"hello" in raw
 
 
