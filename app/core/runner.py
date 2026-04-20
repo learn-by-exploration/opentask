@@ -150,7 +150,23 @@ class AgentRunner:
         try:
             argv = self._build_command(task)
             safe_prompt = task.prompt.replace("\n", "\\n").replace("\r", "\\r")
-            logger.debug("Command: %s (prompt: %.40s)", argv[0], safe_prompt)
+            logger.info("Task #%d command: %s (cwd=%s)", task.id, argv, cwd)
+
+            # Pre-flight: verify the agent binary is on PATH
+            import shutil
+            if not shutil.which(argv[0], path=self._safe_env().get("PATH")):
+                logger.error("Task #%d: agent binary not found: %s", task.id, argv[0])
+                updated = await complete_task(
+                    task_id=task.id,
+                    exit_code=-1,
+                    output_summary=f"Agent binary not found: {argv[0]}",
+                    full_output="",
+                    error_message=f"Agent binary '{argv[0]}' not found in PATH",
+                )
+                if updated:
+                    await self._after_complete(updated)
+                return
+
             process = await asyncio.create_subprocess_exec(
                 *argv,
                 stdin=asyncio.subprocess.DEVNULL,
@@ -283,6 +299,12 @@ class AgentRunner:
 
         Uses sentinel tokens so that `shlex.split` treats each placeholder
         value as a single argument regardless of spaces or special chars.
+
+        Flags (--model, --continue) are inserted immediately *before* the
+        prompt argument, not after the executable name.  This is critical for
+        CLI tools that have subcommands (e.g. ``opencode run {prompt}``):
+        ``opencode run --continue "msg"`` works; ``opencode --continue run "msg"``
+        does not.
         """
         template = settings.agent_commands.get(task.agent)
         if template is None:
@@ -304,6 +326,16 @@ class AgentRunner:
             for arg in argv
         ]
 
+        # Find the prompt position: the index where the prompt placeholder
+        # ended up (the first arg containing the task prompt).  Extra flags
+        # are inserted *before* this index so they sit between the subcommand
+        # and the prompt — where CLI flags belong.
+        prompt_idx = len(argv)  # default: append at end
+        for i, arg in enumerate(argv):
+            if task.prompt and task.prompt in arg:
+                prompt_idx = i
+                break
+
         # Inject model flag if the task has a model set
         if task.model:
             model_flag_template = settings.agent_model_flags.get(task.agent)
@@ -315,16 +347,15 @@ class AgentRunner:
                     part.replace(_MODEL_SENTINEL, task.model)
                     for part in flag_parts
                 ]
-                # Insert model flag right after the command name (argv[0])
-                argv[1:1] = flag_parts
+                argv[prompt_idx:prompt_idx] = flag_parts
+                prompt_idx += len(flag_parts)
 
         # Inject continue flag for follow-up tasks
         if task.parent_task_id:
             continue_flag = settings.agent_continue_flags.get(task.agent)
             if continue_flag:
                 continue_parts = shlex.split(continue_flag)
-                # Insert after command name (argv[0])
-                argv[1:1] = continue_parts
+                argv[prompt_idx:prompt_idx] = continue_parts
 
         return argv
 

@@ -208,9 +208,16 @@ async def make_notify_callback(
         keyboard = InlineKeyboardMarkup([buttons])
 
         # Auto-continue conversation mode for follow-up tasks
+        # Only continue if the task actually succeeded — failed follow-ups
+        # should break the chain so users don't get stuck in a failing loop.
         if task.parent_task_id and task.telegram_chat_id:
-            _chat_followup[task.telegram_chat_id] = task.id
-            text += "\n💬 _Conversation active — just type your next message._"
+            if task.status == TaskStatus.COMPLETED:
+                _chat_followup[task.telegram_chat_id] = task.id
+                text += "\n💬 _Conversation active — just type your next message._"
+            else:
+                # Break follow-up chain on failure
+                _chat_followup.pop(task.telegram_chat_id, None)
+                text += "\n⚠️ _Follow-up ended — task failed. Use 💬 Follow Up to retry._"
 
         for i in range(0, len(text), MAX_MSG_LEN):
             # Only attach keyboard to the last chunk

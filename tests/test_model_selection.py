@@ -339,8 +339,14 @@ class TestBuildCommandModel:
         model_idx = argv.index("--model")
         assert argv[model_idx + 1] == "opus"
 
-    def test_build_command_model_after_command_name(self):
-        """Model flag should be inserted after the command name (argv[0])."""
+    def test_build_command_model_before_prompt(self):
+        """Model flag must come after subcommand, before prompt.
+
+        Regression: previously --model was at argv[1], producing:
+            opencode --model haiku run "hello"  (BROKEN)
+        Must be:
+            opencode run --model haiku "hello"  (CORRECT)
+        """
         from app.core.runner import AgentRunner
         runner = AgentRunner()
         task = MagicMock(spec=Task)
@@ -350,10 +356,11 @@ class TestBuildCommandModel:
         task.project_dir = "/tmp"
         task.parent_task_id = None
         argv = runner._build_command(task)
-        # argv[0] = "opencode", argv[1] = "--model", argv[2] = "haiku", argv[3] = "run", ...
         assert argv[0] == "opencode"
-        assert argv[1] == "--model"
-        assert argv[2] == "haiku"
+        assert argv[1] == "run"  # subcommand stays in position
+        idx_model = argv.index("--model")
+        idx_prompt = argv.index("hello")
+        assert idx_model < idx_prompt, f"--model must come before prompt: {argv}"
 
     def test_build_command_empty_model_no_flag(self):
         from app.core.runner import AgentRunner

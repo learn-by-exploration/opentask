@@ -270,12 +270,24 @@ class TestBuildCommandContinue:
         cmd = self._runner()._build_command(task)
         assert "--continue" in cmd
 
-    def test_continue_flag_position_after_command(self):
+    def test_continue_flag_position_before_prompt(self):
+        """Regression: --continue must come AFTER 'run' subcommand, BEFORE prompt.
+
+        Previously, --continue was inserted at argv[1], producing:
+            opencode --continue run "prompt"  (BROKEN — opencode shows help)
+        Now it must be:
+            opencode run --continue "prompt"  (CORRECT)
+        """
         task = self._task(parent_task_id=1)
         cmd = self._runner()._build_command(task)
-        # --continue should be after the command name
-        idx = cmd.index("--continue")
-        assert idx >= 1
+        idx_continue = cmd.index("--continue")
+        idx_run = cmd.index("run")
+        idx_prompt = cmd.index("follow up prompt")
+        # --continue must be after 'run' and before the prompt
+        assert idx_run < idx_continue < idx_prompt, (
+            f"Flag ordering wrong: run@{idx_run}, --continue@{idx_continue}, prompt@{idx_prompt}. "
+            f"Full cmd: {cmd}"
+        )
 
     def test_continue_flag_claude(self):
         task = self._task(parent_task_id=1, agent="claude")
@@ -309,6 +321,39 @@ class TestBuildCommandContinue:
             ms.agent_continue_flags = {"opencode": "--session-resume"}
             cmd = self._runner()._build_command(task)
         assert "--session-resume" in cmd
+
+    def test_regression_opencode_run_continue_ordering(self):
+        """Regression test for production failure 2026-04-20.
+
+        Tasks #21-23 failed because --continue was placed before 'run':
+            opencode --continue run "prompt"  → opencode shows help text (exit 1)
+        Correct ordering must be:
+            opencode run --continue "prompt"
+        """
+        task = self._task(parent_task_id=20)
+        cmd = self._runner()._build_command(task)
+        assert cmd[0] == "opencode"
+        assert cmd[1] == "run", f"'run' must be argv[1], got {cmd}"
+        assert "--continue" in cmd
+        # 'run' must always be right after 'opencode'
+        assert cmd.index("run") == 1
+        assert cmd.index("--continue") > cmd.index("run")
+
+    def test_regression_combined_model_continue_ordering(self):
+        """Both --model and --continue must come after 'run', before prompt."""
+        task = self._task(parent_task_id=20, model="sonnet")
+        cmd = self._runner()._build_command(task)
+        assert cmd[0] == "opencode"
+        assert cmd[1] == "run"
+        assert cmd[-1] == "follow up prompt"
+        # All flags are between 'run' and prompt
+        run_idx = cmd.index("run")
+        prompt_idx = cmd.index("follow up prompt")
+        for flag in ["--model", "--continue"]:
+            flag_idx = cmd.index(flag)
+            assert run_idx < flag_idx < prompt_idx, (
+                f"{flag} at wrong position: {cmd}"
+            )
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -696,6 +741,64 @@ class TestNotificationFollowUpButton:
         _chat_followup.pop(12345, None)
         await notify(task)
         # Should NOT auto-enter conversation mode
+        assert 12345 not in _chat_followup
+
+    @pytest.mark.asyncio
+    async def test_followup_failure_breaks_conversation_chain(self):
+        """Regression: failed follow-up must break conversation mode.
+
+        Production bug 2026-04-20: follow-up tasks that FAILED still set
+        _chat_followup, trapping the user in a loop where every new message
+        created another doomed follow-up (tasks #21→#22→#23 all failed).
+        """
+        from app.telegram.bot import make_notify_callback, _chat_followup
+
+        app = MagicMock()
+        app.bot = AsyncMock()
+        notify = await make_notify_callback(app)
+
+        # Pre-set conversation mode (simulating an active follow-up chain)
+        _chat_followup[12345] = 19
+
+        task = MagicMock()
+        task.id = 20
+        task.status = TaskStatus.FAILED  # FAILED follow-up
+        task.telegram_chat_id = 12345
+        task.telegram_msg_id = None
+        task.output_summary = "opencode help text"
+        task.error_message = "Exit code 1"
+        task.parent_task_id = 19  # this IS a follow-up
+
+        await notify(task)
+        # Conversation mode must be CLEARED on failure
+        assert 12345 not in _chat_followup, (
+            "Failed follow-up must break conversation chain"
+        )
+        # Notification text should tell the user the chain broke
+        call_kwargs = app.bot.send_message.call_args.kwargs
+        assert "Follow-up ended" in call_kwargs["text"] or "failed" in call_kwargs["text"].lower()
+
+    @pytest.mark.asyncio
+    async def test_followup_cancelled_breaks_conversation_chain(self):
+        """Cancelled follow-up should also break conversation mode."""
+        from app.telegram.bot import make_notify_callback, _chat_followup
+
+        app = MagicMock()
+        app.bot = AsyncMock()
+        notify = await make_notify_callback(app)
+
+        _chat_followup[12345] = 19
+
+        task = MagicMock()
+        task.id = 20
+        task.status = TaskStatus.CANCELLED
+        task.telegram_chat_id = 12345
+        task.telegram_msg_id = None
+        task.output_summary = "Cancelled"
+        task.error_message = "Cancelled by user"
+        task.parent_task_id = 19
+
+        await notify(task)
         assert 12345 not in _chat_followup
 
 
