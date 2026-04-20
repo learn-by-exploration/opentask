@@ -58,6 +58,7 @@ def _task_to_dict(task: Any) -> dict:
         "priority": getattr(task, "priority", 0),
         "retry_count": getattr(task, "retry_count", 0),
         "git_diff": getattr(task, "git_diff", None),
+        "model": getattr(task, "model", None),
     }
 
 
@@ -397,171 +398,370 @@ def _render_dashboard() -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TaskPilot Dashboard</title>
 <style>
-  :root { --bg: #0f172a; --surface: #1e293b; --border: #334155; --text: #e2e8f0; --dim: #94a3b8; --accent: #3b82f6; }
+  :root {
+    --bg: #0f172a; --surface: #1e293b; --surface2: #273548; --border: #334155;
+    --text: #e2e8f0; --dim: #94a3b8; --accent: #3b82f6; --accent-dim: #2563eb;
+    --green: #22c55e; --red: #ef4444; --yellow: #f59e0b; --purple: #a855f7;
+  }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); }
-  .header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 1rem 2rem; display: flex; align-items: center; gap: 1rem; }
-  .header h1 { font-size: 1.5rem; font-weight: 600; }
-  .header .badge { font-size: 0.75rem; padding: 2px 8px; border-radius: 9999px; background: #22c55e; color: #000; font-weight: 600; }
-  .header .refresh-info { margin-left: auto; font-size: 0.8rem; color: var(--dim); }
-  .container { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
-  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
-  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1rem; }
-  .stat-card .label { font-size: 0.75rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.05em; }
-  .stat-card .value { font-size: 1.8rem; font-weight: 700; margin-top: 0.25rem; }
-  .stat-card .sub { font-size: 0.8rem; color: var(--dim); margin-top: 0.25rem; }
-  .section { background: var(--surface); border: 1px solid var(--border); border-radius: 0.5rem; margin-bottom: 1.5rem; overflow: hidden; }
-  .section-header { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 0.9rem; }
-  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-  th { text-align: left; padding: 0.5rem 1rem; color: var(--dim); font-size: 0.75rem; text-transform: uppercase; border-bottom: 1px solid var(--border); }
+
+  /* Header */
+  .header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0.75rem 2rem; display: flex; align-items: center; gap: 1rem; position: sticky; top: 0; z-index: 100; }
+  .header h1 { font-size: 1.3rem; font-weight: 700; }
+  .badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 9999px; font-weight: 600; }
+  .badge-live { background: var(--green); color: #000; }
+  .badge-warn { background: var(--yellow); color: #000; }
+  .badge-err { background: var(--red); color: #fff; }
+  .header-right { margin-left: auto; display: flex; align-items: center; gap: 1rem; font-size: 0.8rem; color: var(--dim); }
+
+  .container { max-width: 1400px; margin: 0 auto; padding: 1.5rem; }
+
+  /* Stats strip */
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 0.75rem; margin-bottom: 1.25rem; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.875rem 1rem; }
+  .stat-card .label { font-size: 0.7rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.05em; }
+  .stat-card .value { font-size: 1.6rem; font-weight: 700; margin-top: 0.15rem; }
+  .stat-card .sub { font-size: 0.75rem; color: var(--dim); margin-top: 0.15rem; }
+
+  /* Running card */
+  .running-card { background: linear-gradient(135deg, #1e3a5f 0%, var(--surface) 100%); border: 1px solid var(--accent); border-radius: 0.5rem; padding: 1rem 1.25rem; margin-bottom: 1.25rem; display: flex; align-items: flex-start; gap: 1rem; }
+  .running-pulse { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); margin-top: 4px; animation: pulse 1.5s infinite; flex-shrink: 0; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+  .running-info { flex: 1; min-width: 0; }
+  .running-info h3 { color: #60a5fa; font-size: 0.95rem; margin-bottom: 0.3rem; }
+  .running-info .prompt { color: var(--text); font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .running-info .meta { color: var(--dim); font-size: 0.8rem; margin-top: 0.35rem; display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .running-info .meta span { display: inline-flex; align-items: center; gap: 0.25rem; }
+  .running-elapsed { font-size: 1.6rem; font-weight: 700; color: #60a5fa; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 1.25rem; }
+  .tab { padding: 0.6rem 1.25rem; font-size: 0.85rem; font-weight: 500; color: var(--dim); cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.15s; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab .count { font-size: 0.7rem; background: var(--surface2); padding: 1px 6px; border-radius: 9999px; margin-left: 0.35rem; }
+
+  /* Sections */
+  .section { background: var(--surface); border: 1px solid var(--border); border-radius: 0.5rem; overflow: hidden; display: none; }
+  .section.active { display: block; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  th { text-align: left; padding: 0.55rem 1rem; color: var(--dim); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; border-bottom: 1px solid var(--border); background: var(--surface2); position: sticky; top: 0; }
   td { padding: 0.5rem 1rem; border-bottom: 1px solid var(--border); vertical-align: top; }
   tr:last-child td { border-bottom: none; }
-  .status-badge { display: inline-block; padding: 2px 8px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; }
-  .prompt-cell { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .empty-state { padding: 2rem; text-align: center; color: var(--dim); }
-  .running-card { background: linear-gradient(135deg, #1e3a5f, #1e293b); border: 1px solid #3b82f6; border-radius: 0.5rem; padding: 1rem; margin-bottom: 1.5rem; }
-  .running-card h3 { color: #60a5fa; margin-bottom: 0.5rem; }
-  .running-card .prompt { color: var(--text); font-size: 0.9rem; }
-  .running-card .meta { color: var(--dim); font-size: 0.8rem; margin-top: 0.5rem; }
+  tr:hover td { background: rgba(59,130,246,0.04); }
+  .prompt-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .empty-state { padding: 2.5rem; text-align: center; color: var(--dim); font-size: 0.9rem; }
+  .status-badge { display: inline-block; padding: 2px 8px; border-radius: 9999px; font-size: 0.72rem; font-weight: 600; white-space: nowrap; }
+  .priority-badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; background: var(--purple); color: #fff; }
+  .diff-badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: 500; background: #166534; color: #86efac; }
+  .worker-tag { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 0.7rem; background: #1e3a5f; color: #93c5fd; }
+  .model-tag { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 0.7rem; background: #3b1f6e; color: #c4b5fd; }
+  .retry-tag { display: inline-block; padding: 1px 5px; border-radius: 4px; font-size: 0.65rem; background: #7c2d12; color: #fed7aa; }
+  .clickable { cursor: pointer; }
   a { color: var(--accent); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  @media (max-width: 640px) { .container { padding: 0.75rem; } .stats-grid { grid-template-columns: repeat(2, 1fr); } }
+
+  /* Workers grid */
+  .workers-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.75rem; padding: 1rem; }
+  .worker-card { background: var(--surface2); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.875rem; }
+  .worker-card .wname { font-weight: 600; font-size: 0.9rem; margin-bottom: 0.3rem; }
+  .worker-card .wstatus { font-size: 0.8rem; color: var(--dim); }
+  .worker-card .wtask { font-size: 0.78rem; color: var(--text); margin-top: 0.3rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* Modal */
+  .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 200; justify-content: center; align-items: flex-start; padding: 3rem 1rem; overflow-y: auto; }
+  .modal-overlay.open { display: flex; }
+  .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 0.75rem; width: 100%; max-width: 720px; max-height: 85vh; overflow-y: auto; }
+  .modal-header { display: flex; align-items: center; justify-content: space-between; padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); z-index: 1; }
+  .modal-header h2 { font-size: 1rem; }
+  .modal-close { background: none; border: none; color: var(--dim); font-size: 1.3rem; cursor: pointer; padding: 0.25rem; }
+  .modal-close:hover { color: var(--text); }
+  .modal-body { padding: 1.25rem; }
+  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem 1.5rem; margin-bottom: 1rem; font-size: 0.85rem; }
+  .detail-grid .dkey { color: var(--dim); font-size: 0.75rem; text-transform: uppercase; }
+  .detail-grid .dval { font-weight: 500; }
+  .detail-output { margin-top: 1rem; }
+  .detail-output h4 { font-size: 0.8rem; color: var(--dim); text-transform: uppercase; margin-bottom: 0.5rem; }
+  .detail-output pre { background: var(--bg); border: 1px solid var(--border); border-radius: 0.375rem; padding: 0.75rem; font-size: 0.78rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow-y: auto; color: var(--text); font-family: 'SF Mono', 'Fira Code', monospace; }
+  .detail-diff { margin-top: 0.75rem; padding: 0.75rem; background: #0d2818; border: 1px solid #166534; border-radius: 0.375rem; font-size: 0.82rem; color: #86efac; }
+
+  @media (max-width: 640px) {
+    .container { padding: 0.75rem; }
+    .stats-grid { grid-template-columns: repeat(2, 1fr); }
+    .running-card { flex-direction: column; }
+    .running-elapsed { font-size: 1.2rem; }
+    .detail-grid { grid-template-columns: 1fr; }
+    .header { padding: 0.75rem 1rem; }
+    .tab { padding: 0.5rem 0.75rem; font-size: 0.8rem; }
+  }
 </style>
 </head>
 <body>
 <div class="header">
   <h1>&#x1F680; TaskPilot</h1>
-  <span class="badge" id="health-badge">LIVE</span>
-  <span class="refresh-info">Auto-refresh: <span id="countdown">5</span>s</span>
+  <span class="badge badge-live" id="health-badge">LIVE</span>
+  <div class="header-right">
+    <span>&#x23F1; <span id="countdown">5</span>s</span>
+  </div>
 </div>
 <div class="container">
   <div id="running-section"></div>
   <div class="stats-grid" id="stats-grid"></div>
-  <div class="section">
-    <div class="section-header">&#x1F4CB; Queue</div>
+  <div class="tabs" id="tabs">
+    <div class="tab active" data-tab="queue">Queue <span class="count" id="tab-queue-count">0</span></div>
+    <div class="tab" data-tab="tasks">Tasks <span class="count" id="tab-tasks-count">0</span></div>
+    <div class="tab" data-tab="chains">Chains <span class="count" id="tab-chains-count">0</span></div>
+    <div class="tab" data-tab="workers">Workers <span class="count" id="tab-workers-count">0</span></div>
+  </div>
+  <div class="section active" id="section-queue">
     <div id="queue-body"><div class="empty-state">Loading...</div></div>
   </div>
-  <div class="section">
-    <div class="section-header">&#x1F4DC; Recent Tasks</div>
+  <div class="section" id="section-tasks">
     <div id="tasks-body"><div class="empty-state">Loading...</div></div>
   </div>
-  <div class="section">
-    <div class="section-header">&#x26D3;&#xFE0F; Chains</div>
+  <div class="section" id="section-chains">
     <div id="chains-body"><div class="empty-state">Loading...</div></div>
   </div>
+  <div class="section" id="section-workers">
+    <div id="workers-body"><div class="empty-state">Loading...</div></div>
+  </div>
 </div>
+
+<!-- Task detail modal -->
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="modal-title">Task Detail</h2>
+      <button class="modal-close" id="modal-close">&times;</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
 <script>
 const STATUS_COLORS = {"pending":"#6b7280","running":"#3b82f6","completed":"#22c55e","failed":"#ef4444","cancelled":"#f59e0b"};
 const STATUS_ICONS = {"pending":"\\u{1F4CB}","running":"\\u{1F504}","completed":"\\u{2705}","failed":"\\u{274C}","cancelled":"\\u{1F6AB}"};
 
 function esc(s) { if (s === null || s === undefined) return ''; const d = document.createElement('div'); d.textContent = String(s); return d.innerHTML; }
 
+function fmtDuration(secs) {
+  if (!secs && secs !== 0) return '-';
+  if (secs < 60) return secs + 's';
+  const m = Math.floor(secs / 60), s = secs % 60;
+  return m + 'm ' + (s < 10 ? '0' : '') + s + 's';
+}
+
 function timeAgo(iso) {
   if (!iso) return '';
   const diff = (Date.now() - new Date(iso + 'Z').getTime()) / 1000;
   if (diff < 60) return Math.round(diff) + 's ago';
-  if (diff < 3600) return Math.round(diff/60) + 'm ago';
-  if (diff < 86400) return Math.round(diff/3600) + 'h ago';
-  return Math.round(diff/86400) + 'd ago';
+  if (diff < 3600) return Math.round(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.round(diff / 3600) + 'h ago';
+  return Math.round(diff / 86400) + 'd ago';
+}
+
+function elapsedSince(iso) {
+  if (!iso) return '0:00';
+  const diff = Math.max(0, Math.floor((Date.now() - new Date(iso + 'Z').getTime()) / 1000));
+  const m = Math.floor(diff / 60), s = diff % 60;
+  return m + ':' + (s < 10 ? '0' : '') + s;
 }
 
 function badge(status) {
   const c = STATUS_COLORS[status] || '#6b7280';
   const i = STATUS_ICONS[status] || '';
-  return `<span class="status-badge" style="background:${c}20;color:${c}">${i} ${esc(status)}</span>`;
+  return '<span class="status-badge" style="background:' + c + '20;color:' + c + '">' + i + ' ' + esc(status) + '</span>';
 }
+
+function tags(t) {
+  let h = '';
+  if (t.model) h += ' <span class="model-tag">' + esc(t.model) + '</span>';
+  if (t.assigned_to) h += ' <span class="worker-tag">@' + esc(t.assigned_to) + '</span>';
+  if (t.priority > 0) h += ' <span class="priority-badge">P' + esc(t.priority) + '</span>';
+  if (t.retry_count > 0) h += ' <span class="retry-tag">retry ' + esc(t.retry_count) + '</span>';
+  if (t.git_diff) h += ' <span class="diff-badge">&#x1F4C4; diff</span>';
+  return h;
+}
+
+// Tabs
+let activeTab = 'queue';
+document.getElementById('tabs').addEventListener('click', function(e) {
+  const tab = e.target.closest('.tab');
+  if (!tab) return;
+  activeTab = tab.dataset.tab;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === activeTab));
+  document.querySelectorAll('.section').forEach(s => s.classList.toggle('active', s.id === 'section-' + activeTab));
+});
+
+// Modal
+const overlay = document.getElementById('modal-overlay');
+document.getElementById('modal-close').onclick = () => overlay.classList.remove('open');
+overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.classList.remove('open'); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') overlay.classList.remove('open'); });
+
+async function showTaskDetail(id) {
+  const mb = document.getElementById('modal-body');
+  mb.innerHTML = '<div class="empty-state">Loading...</div>';
+  document.getElementById('modal-title').textContent = 'Task #' + id;
+  overlay.classList.add('open');
+  try {
+    const r = await fetch('/api/tasks/' + id);
+    if (!r.ok) { mb.innerHTML = '<div class="empty-state">Error loading task</div>'; return; }
+    const t = await r.json();
+    let h = '<div class="detail-grid">';
+    h += '<div><div class="dkey">Status</div><div class="dval">' + badge(t.status) + '</div></div>';
+    h += '<div><div class="dkey">Agent</div><div class="dval">' + esc(t.agent) + (t.model ? ' <span class="model-tag">' + esc(t.model) + '</span>' : '') + '</div></div>';
+    h += '<div><div class="dkey">Project</div><div class="dval">' + esc(t.project_dir) + '</div></div>';
+    h += '<div><div class="dkey">Duration</div><div class="dval">' + fmtDuration(t.duration_seconds) + '</div></div>';
+    if (t.assigned_to) h += '<div><div class="dkey">Worker</div><div class="dval"><span class="worker-tag">@' + esc(t.assigned_to) + '</span></div></div>';
+    if (t.priority > 0) h += '<div><div class="dkey">Priority</div><div class="dval"><span class="priority-badge">P' + esc(t.priority) + '</span></div></div>';
+    if (t.retry_count > 0) h += '<div><div class="dkey">Retry</div><div class="dval">' + esc(t.retry_count) + '</div></div>';
+    if (t.exit_code != null) h += '<div><div class="dkey">Exit Code</div><div class="dval">' + esc(t.exit_code) + '</div></div>';
+    h += '<div><div class="dkey">Created</div><div class="dval">' + esc(t.created_at) + '</div></div>';
+    if (t.completed_at) h += '<div><div class="dkey">Completed</div><div class="dval">' + esc(t.completed_at) + '</div></div>';
+    h += '</div>';
+    h += '<div class="detail-output"><h4>Prompt</h4><pre>' + esc(t.prompt) + '</pre></div>';
+    if (t.output_summary) h += '<div class="detail-output"><h4>Output Summary</h4><pre>' + esc(t.output_summary) + '</pre></div>';
+    if (t.full_output) h += '<div class="detail-output"><h4>Full Output</h4><pre>' + esc(t.full_output) + '</pre></div>';
+    if (t.error_message) h += '<div class="detail-output"><h4>Error</h4><pre style="color:#fca5a5">' + esc(t.error_message) + '</pre></div>';
+    if (t.git_diff) h += '<div class="detail-diff">&#x1F4C4; <strong>Git Diff:</strong> ' + esc(t.git_diff) + '</div>';
+    mb.innerHTML = h;
+  } catch (e) {
+    mb.innerHTML = '<div class="empty-state">Failed to load task details</div>';
+  }
+}
+
+// Running task live timer
+let runningStartedAt = null;
+function updateRunningTimer() {
+  const el = document.getElementById('running-timer');
+  if (el && runningStartedAt) el.textContent = elapsedSince(runningStartedAt);
+}
+function scheduleTimer() { setTimeout(function() { updateRunningTimer(); scheduleTimer(); }, 1000); }
+scheduleTimer();
 
 async function refresh() {
   try {
     const results = await Promise.allSettled([
       fetch('/api/stats').then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
-      fetch('/api/tasks?limit=20').then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
+      fetch('/api/tasks?limit=30').then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
       fetch('/api/queue').then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
       fetch('/api/chains').then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
+      fetch('/api/workers').then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }),
     ]);
 
     const stats = results[0].status === 'fulfilled' ? results[0].value : null;
-    const tasks = results[1].status === 'fulfilled' ? results[1].value : null;
-    const queue = results[2].status === 'fulfilled' ? results[2].value : null;
-    const chains = results[3].status === 'fulfilled' ? results[3].value : null;
+    const tasks = results[1].status === 'fulfilled' ? results[1].value : [];
+    const queue = results[2].status === 'fulfilled' ? results[2].value : [];
+    const chains = results[3].status === 'fulfilled' ? results[3].value : [];
+    const workers = results[4].status === 'fulfilled' ? results[4].value : [];
     const anyFailed = results.some(r => r.status === 'rejected');
+
+    // Tab counts
+    document.getElementById('tab-queue-count').textContent = queue.length;
+    document.getElementById('tab-tasks-count').textContent = tasks.length;
+    document.getElementById('tab-chains-count').textContent = chains.length;
+    document.getElementById('tab-workers-count').textContent = workers.length;
 
     // Running task
     const rs = document.getElementById('running-section');
     if (stats && stats.running) {
       const t = stats.running;
-      const elapsed = t.started_at ? timeAgo(t.started_at) : '';
-      rs.innerHTML = `<div class="running-card">
-        <h3>\\u{1F504} Running Task #${esc(t.id)}</h3>
-        <div class="prompt">${esc(t.prompt)}</div>
-        <div class="meta">${esc(t.agent)} &bull; started ${elapsed}</div>
-      </div>`;
-    } else if (stats) {
+      runningStartedAt = t.started_at;
+      let metaH = '<span>&#x1F916; ' + esc(t.agent) + '</span>';
+      if (t.model) metaH += '<span>&#x2699; ' + esc(t.model) + '</span>';
+      if (t.assigned_to) metaH += '<span>&#x1F4E1; @' + esc(t.assigned_to) + '</span>';
+      metaH += '<span>&#x1F4C2; ' + esc(t.project_dir) + '</span>';
+      rs.innerHTML = '<div class="running-card clickable" onclick="showTaskDetail(' + t.id + ')">' +
+        '<div class="running-pulse"></div>' +
+        '<div class="running-info"><h3>Running Task #' + esc(t.id) + '</h3>' +
+        '<div class="prompt">' + esc(t.prompt) + '</div>' +
+        '<div class="meta">' + metaH + '</div></div>' +
+        '<div class="running-elapsed" id="running-timer">' + elapsedSince(t.started_at) + '</div>' +
+        '</div>';
+    } else {
+      runningStartedAt = null;
       rs.innerHTML = '';
     }
 
     // Stats
     if (stats) {
-    document.getElementById('stats-grid').innerHTML = `
-      <div class="stat-card"><div class="label">Queue</div><div class="value">${esc(stats.pending_count)}</div><div class="sub">/ ${esc(stats.queue_capacity)} capacity</div></div>
-      <div class="stat-card"><div class="label">Completed</div><div class="value" style="color:#22c55e">${esc(stats.recent_completed)}</div><div class="sub">recent</div></div>
-      <div class="stat-card"><div class="label">Failed</div><div class="value" style="color:#ef4444">${esc(stats.recent_failed)}</div><div class="sub">recent</div></div>
-      <div class="stat-card"><div class="label">Avg Duration</div><div class="value">${esc(stats.avg_duration_seconds)}s</div><div class="sub">recent tasks</div></div>
-      <div class="stat-card"><div class="label">Chains</div><div class="value">${esc(stats.chains_total)}</div><div class="sub">${esc(stats.chains_running)} running</div></div>
-    `;
+      const total = stats.recent_completed + stats.recent_failed;
+      const rate = total > 0 ? Math.round(stats.recent_completed / total * 100) : 100;
+      const rateColor = rate >= 80 ? '#22c55e' : rate >= 50 ? '#f59e0b' : '#ef4444';
+      document.getElementById('stats-grid').innerHTML =
+        '<div class="stat-card"><div class="label">Queue</div><div class="value">' + esc(stats.pending_count) + '</div><div class="sub">/ ' + esc(stats.queue_capacity) + ' capacity</div></div>' +
+        '<div class="stat-card"><div class="label">Completed</div><div class="value" style="color:#22c55e">' + esc(stats.recent_completed) + '</div><div class="sub">recent</div></div>' +
+        '<div class="stat-card"><div class="label">Failed</div><div class="value" style="color:#ef4444">' + esc(stats.recent_failed) + '</div><div class="sub">recent</div></div>' +
+        '<div class="stat-card"><div class="label">Success Rate</div><div class="value" style="color:' + rateColor + '">' + rate + '%</div><div class="sub">last ' + total + ' tasks</div></div>' +
+        '<div class="stat-card"><div class="label">Avg Duration</div><div class="value">' + fmtDuration(stats.avg_duration_seconds) + '</div><div class="sub">recent</div></div>' +
+        '<div class="stat-card"><div class="label">Chains</div><div class="value">' + esc(stats.chains_total) + '</div><div class="sub">' + esc(stats.chains_running) + ' running</div></div>' +
+        '<div class="stat-card"><div class="label">Workers</div><div class="value">' + esc(workers.length) + '</div><div class="sub">connected</div></div>';
     }
 
     // Queue
-    if (queue !== null) {
     const qb = document.getElementById('queue-body');
     if (queue.length === 0) {
-      qb.innerHTML = '<div class="empty-state">Queue is empty \\u{1F4ED}</div>';
+      qb.innerHTML = '<div class="empty-state">Queue is empty &#x1F4ED;</div>';
     } else {
-      qb.innerHTML = '<table><tr><th>#</th><th>Agent</th><th>Prompt</th><th>Created</th></tr>' +
-        queue.map(t => `<tr><td>${esc(t.id)}</td><td>${esc(t.agent)}</td><td class="prompt-cell">${esc(t.prompt)}</td><td>${timeAgo(t.created_at)}</td></tr>`).join('') + '</table>';
-    }
+      qb.innerHTML = '<table><tr><th>#</th><th>Agent</th><th>Prompt</th><th>Tags</th><th>Created</th></tr>' +
+        queue.map(t => '<tr class="clickable" onclick="showTaskDetail(' + t.id + ')">' +
+          '<td>' + esc(t.id) + '</td>' +
+          '<td>' + esc(t.agent) + '</td>' +
+          '<td class="prompt-cell">' + esc(t.prompt) + '</td>' +
+          '<td>' + tags(t) + '</td>' +
+          '<td>' + timeAgo(t.created_at) + '</td></tr>').join('') + '</table>';
     }
 
     // Tasks
-    if (tasks !== null) {
     const tb = document.getElementById('tasks-body');
     if (tasks.length === 0) {
       tb.innerHTML = '<div class="empty-state">No tasks yet</div>';
     } else {
-      tb.innerHTML = '<table><tr><th>#</th><th>Status</th><th>Agent</th><th>Prompt</th><th>Duration</th><th>When</th></tr>' +
-        tasks.map(t => `<tr>
-          <td><a href="/api/tasks/${esc(t.id)}">${esc(t.id)}</a></td>
-          <td>${badge(t.status)}</td>
-          <td>${esc(t.agent)}</td>
-          <td class="prompt-cell">${esc(t.prompt)}</td>
-          <td>${t.duration_seconds ? esc(t.duration_seconds) + 's' : '-'}</td>
-          <td>${timeAgo(t.completed_at || t.created_at)}</td>
-        </tr>`).join('') + '</table>';
-    }
+      tb.innerHTML = '<table><tr><th>#</th><th>Status</th><th>Agent</th><th>Prompt</th><th>Tags</th><th>Duration</th><th>When</th></tr>' +
+        tasks.map(t => '<tr class="clickable" onclick="showTaskDetail(' + t.id + ')">' +
+          '<td>' + esc(t.id) + '</td>' +
+          '<td>' + badge(t.status) + '</td>' +
+          '<td>' + esc(t.agent) + '</td>' +
+          '<td class="prompt-cell">' + esc(t.prompt) + '</td>' +
+          '<td>' + tags(t) + '</td>' +
+          '<td>' + fmtDuration(t.duration_seconds) + '</td>' +
+          '<td>' + timeAgo(t.completed_at || t.created_at) + '</td></tr>').join('') + '</table>';
     }
 
     // Chains
-    if (chains !== null) {
     const cb = document.getElementById('chains-body');
     if (chains.length === 0) {
       cb.innerHTML = '<div class="empty-state">No chains saved</div>';
     } else {
-      cb.innerHTML = '<table><tr><th>Name</th><th>Status</th><th>Steps</th><th>Progress</th><th>Created</th></tr>' +
-        chains.map(c => `<tr>
-          <td><a href="/api/chains/${esc(c.id)}">${esc(c.name)}</a></td>
-          <td>${badge(c.status)}</td>
-          <td>${esc(c.total_steps)}</td>
-          <td>${esc(c.current_step)}/${esc(c.total_steps)}</td>
-          <td>${timeAgo(c.created_at)}</td>
-        </tr>`).join('') + '</table>';
-    }
+      cb.innerHTML = '<table><tr><th>Name</th><th>Status</th><th>Progress</th><th>Created</th></tr>' +
+        chains.map(c => '<tr>' +
+          '<td>' + esc(c.name) + '</td>' +
+          '<td>' + badge(c.status) + '</td>' +
+          '<td><div style="display:flex;align-items:center;gap:0.5rem"><div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden"><div style="width:' + (c.total_steps > 0 ? Math.round(c.current_step / c.total_steps * 100) : 0) + '%;height:100%;background:var(--accent);border-radius:3px"></div></div><span style="font-size:0.75rem;color:var(--dim)">' + esc(c.current_step) + '/' + esc(c.total_steps) + '</span></div></td>' +
+          '<td>' + timeAgo(c.created_at) + '</td></tr>').join('') + '</table>';
     }
 
-    document.getElementById('health-badge').textContent = anyFailed ? 'PARTIAL' : 'LIVE';
-    document.getElementById('health-badge').style.background = anyFailed ? '#f59e0b' : '#22c55e';
+    // Workers
+    const wb = document.getElementById('workers-body');
+    if (workers.length === 0) {
+      wb.innerHTML = '<div class="empty-state">No workers connected &#x1F4E1;</div>';
+    } else {
+      wb.innerHTML = '<div class="workers-grid">' + workers.map(w =>
+        '<div class="worker-card">' +
+        '<div class="wname">&#x1F5A5; ' + esc(w.worker_id || w.id || 'unknown') + '</div>' +
+        '<div class="wstatus">' + badge(w.status || 'running') + '</div>' +
+        (w.task_id ? '<div class="wtask">Task #' + esc(w.task_id) + ': ' + esc(w.prompt || '') + '</div>' : '<div class="wtask" style="color:var(--dim)">Idle</div>') +
+        '</div>').join('') + '</div>';
+    }
+
+    const hb = document.getElementById('health-badge');
+    hb.textContent = anyFailed ? 'PARTIAL' : 'LIVE';
+    hb.className = 'badge ' + (anyFailed ? 'badge-warn' : 'badge-live');
   } catch (e) {
-    document.getElementById('health-badge').textContent = 'ERROR';
-    document.getElementById('health-badge').style.background = '#ef4444';
+    const hb = document.getElementById('health-badge');
+    hb.textContent = 'ERROR';
+    hb.className = 'badge badge-err';
   }
 }
 
