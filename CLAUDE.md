@@ -18,18 +18,20 @@ app/
   config/settings.py    — Pydantic settings from .env (Settings class)
   core/models.py        — Task, TaskChain, ChatPrefs (SQLAlchemy ORM)
   core/db.py            — Async engine + session factory (aiosqlite)
-  core/broker.py        — Queue CRUD, chains, prefs, recovery, purge
+  core/broker.py        — Queue CRUD, chains, prefs, recovery, purge, worker functions
   core/runner.py        — AgentRunner: subprocess execution with timeout + shell escaping
   telegram/bot.py       — Telegram bot: auth, commands, chains, repeats, notifications
-  web/dashboard.py      — FastAPI web dashboard (HTML + JSON API)
+  web/dashboard.py      — FastAPI web dashboard (HTML + JSON API + Worker API)
   __main__.py           — Entry point: init_db → recover → purge → bot + runner + dashboard
-tests/                  — 879 tests across 19 files
+worker.py               — Standalone remote worker client (zero external deps)
+tests/                  — 942+ tests across 20 files
   conftest.py           — In-memory SQLite fixtures
   test_broker.py        — Core broker operations
   test_runner.py        — Command building + summarization
   test_bot.py           — All Telegram handlers
   test_chains.py        — Chain CRUD and execution
   test_web_dashboard.py — Dashboard API + auth + HTML
+  test_worker_api.py    — Multi-machine worker API (63 tests)
   test_qa_security.py   — Security edge cases
 ```
 
@@ -43,6 +45,16 @@ tests/                  — 879 tests across 19 files
 - **Path allowlist**: ALLOWED_PROJECT_DIRS restricts where agents can run
 - **Shell safety**: Prompts and project dirs shell-escaped via shlex.quote
 - **Web dashboard**: FastAPI with optional bearer token auth, security headers, auto-refresh HTML UI
+
+## Multi-Machine Workers
+
+Remote machines can claim and execute tasks via the Worker API:
+
+- **@worker routing**: Send `@server2 fix the bug` in Telegram to assign a task to a specific worker
+- **Worker API endpoints**: `POST /api/worker/claim`, `POST /api/worker/{id}/result`, `POST /api/worker/{id}/heartbeat`, `GET /api/workers`
+- **worker.py**: Standalone client script — copy to any machine, configure brain URL, and run
+- **Heartbeat recovery**: Workers send heartbeats every 30s; stale tasks (>120s) auto-recover to PENDING
+- **Local runner unchanged**: `pick_next_task()` skips tasks with `assigned_to` set — local and remote work coexist
 
 ## Key Design Decisions
 
@@ -60,6 +72,14 @@ tests/                  — 879 tests across 19 files
 - Runner wake callback: new tasks wake the runner immediately (no poll delay)
 - Progress notifications: periodic updates while long tasks run
 - Dashboard: embedded HTML (no template deps), JSON API for programmatic access
+
+## Key Design Decisions (Workers)
+
+- Task model: `assigned_to`, `worker_id`, `heartbeat_at` nullable fields
+- `worker_claim_task()` prefers tasks assigned to the specific worker, falls back to unassigned
+- `worker_submit_result()` validates worker_id ownership before accepting results
+- worker.py has zero external dependencies (uses urllib, not requests)
+- Stale worker recovery runs both on startup and before each claim attempt
 
 ## Running Tests
 
