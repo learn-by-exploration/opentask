@@ -577,6 +577,7 @@ class TestHandleText:
         mock_task.id = 1
         mock_task.agent = "opencode"
         mock_task.project_dir = "/home/user/project"
+        mock_task.model = None
         mock_enqueue.return_value = mock_task
         update = _make_update(text="fix the login page")
         ctx = _make_context()

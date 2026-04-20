@@ -40,6 +40,7 @@ async def enqueue_task(
     agent: str | None = None,
     chat_id: int | None = None,
     msg_id: int | None = None,
+    model: str | None = None,
 ) -> Task:
     """Add a new task to the queue. Raises ValueError if the queue is full."""
     session = await get_session()
@@ -59,6 +60,7 @@ async def enqueue_task(
             prompt=prompt,
             project_dir=project_dir or settings.default_project_dir,
             agent=agent or settings.default_agent,
+            model=model or settings.default_model or None,
             status=TaskStatus.PENDING,
             telegram_chat_id=chat_id,
             telegram_msg_id=msg_id,
@@ -82,6 +84,22 @@ async def switch_task_agent(task_id: int, new_agent: str) -> Task | None:
         if task is None:
             return None
         task.agent = new_agent
+        await session.flush()
+        await session.refresh(task)
+        return task
+
+
+async def switch_task_model(task_id: int, new_model: str) -> Task | None:
+    """Switch the model for a PENDING task. Returns updated task or None."""
+    session = await get_session()
+    async with session, session.begin():
+        result = await session.execute(
+            select(Task).where(Task.id == task_id, Task.status == TaskStatus.PENDING)
+        )
+        task = result.scalar_one_or_none()
+        if task is None:
+            return None
+        task.model = new_model if new_model else None
         await session.flush()
         await session.refresh(task)
         return task
@@ -653,7 +671,7 @@ async def purge_old_tasks(days: int = 30) -> int:
 
 
 async def get_chat_prefs(chat_id: int) -> dict:
-    """Return {"project_dir": ..., "agent": ...} for a chat. Missing keys → None."""
+    """Return {"project_dir": ..., "agent": ..., "model": ...} for a chat. Missing keys → None."""
     session = await get_session()
     async with session:
         result = await session.execute(
@@ -661,11 +679,11 @@ async def get_chat_prefs(chat_id: int) -> dict:
         )
         prefs = result.scalar_one_or_none()
         if prefs is None:
-            return {"project_dir": None, "agent": None}
-        return {"project_dir": prefs.project_dir, "agent": prefs.agent}
+            return {"project_dir": None, "agent": None, "model": None}
+        return {"project_dir": prefs.project_dir, "agent": prefs.agent, "model": prefs.model}
 
 
-async def set_chat_pref(chat_id: int, *, project_dir: str | None = None, agent: str | None = None) -> None:
+async def set_chat_pref(chat_id: int, *, project_dir: str | None = None, agent: str | None = None, model: str | None = None) -> None:
     """Upsert a single chat preference."""
     session = await get_session()
     async with session, session.begin():
@@ -680,6 +698,8 @@ async def set_chat_pref(chat_id: int, *, project_dir: str | None = None, agent: 
             prefs.project_dir = project_dir
         if agent is not None:
             prefs.agent = agent
+        if model is not None:
+            prefs.model = model
         prefs.updated_at = _utcnow()
 
 
@@ -690,6 +710,7 @@ async def save_recipe(
     name: str,
     triggers: list[str],
     agent: str | None = None,
+    model: str | None = None,
     project_dir: str | None = None,
     setup_commands: list[str] | None = None,
     skills: list[str] | None = None,
@@ -731,6 +752,7 @@ async def save_recipe(
             name=name,
             triggers_json=json.dumps(triggers),
             agent=agent,
+            model=model,
             project_dir=project_dir,
             setup_commands_json=json.dumps(setup_commands or []),
             skills_json=json.dumps(skills or []),
@@ -825,6 +847,8 @@ async def _apply_recipe_to_task(
         task.prompt = enriched_prompt
         if recipe.agent:
             task.agent = recipe.agent
+        if recipe.model:
+            task.model = recipe.model
         if recipe.project_dir:
             task.project_dir = recipe.project_dir
         await session.flush()

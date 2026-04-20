@@ -71,6 +71,7 @@ class Task(Base):
     prompt: Mapped[str] = mapped_column(Text, nullable=False)
     project_dir: Mapped[str] = mapped_column(String(512), nullable=False)
     agent: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     status: Mapped[TaskStatus] = mapped_column(
         Enum(TaskStatus), default=TaskStatus.PENDING, nullable=False
     )
@@ -109,6 +110,7 @@ class ChatPrefs(Base):
     chat_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     project_dir: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     agent: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    model: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
@@ -122,6 +124,7 @@ class Recipe(Base):
     triggers_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     # Optional overrides
     agent: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    model: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     project_dir: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     # JSON list of setup commands to prepend: ["source /opt/ros/humble/setup.bash"]
     setup_commands_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")

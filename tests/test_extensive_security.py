@@ -338,11 +338,12 @@ class TestHandleTextAutoQueue:
 
     @pytest.mark.asyncio
     async def test_auto_queue_single_agent_no_switch_buttons(self, fresh_db, monkeypatch):
-        """With only one agent configured, no switch buttons should appear."""
-        from app.telegram.bot import handle_text, _chat_agent, _chat_project_dir
+        """With only one agent configured, no agent-switch buttons should appear."""
+        from app.telegram.bot import handle_text, _chat_agent, _chat_project_dir, _chat_model
 
         _chat_agent.clear()
         _chat_project_dir.clear()
+        _chat_model.clear()
 
         monkeypatch.setattr(
             "app.config.settings.settings.agent_commands",
@@ -354,11 +355,13 @@ class TestHandleTextAutoQueue:
 
         update.message.reply_text.assert_awaited_once()
         call_kwargs = update.message.reply_text.call_args
-        # Should NOT have reply_markup since no other agents
+        # Model button may appear, but no agent-switch buttons
         if "reply_markup" in (call_kwargs[1] or {}):
-            assert call_kwargs[1]["reply_markup"] is None or call_kwargs[1].get("reply_markup") is None
-        else:
-            pass  # no reply_markup key means no buttons — correct
+            keyboard = call_kwargs[1]["reply_markup"]
+            if keyboard is not None:
+                flat_buttons = [b for row in keyboard.inline_keyboard for b in row]
+                switch_buttons = [b for b in flat_buttons if b.callback_data and b.callback_data.startswith("switch:")]
+                assert len(switch_buttons) == 0, "No agent-switch buttons expected with single agent"
 
     @pytest.mark.asyncio
     async def test_auto_queue_exception_handling(self, fresh_db, monkeypatch):
@@ -487,6 +490,7 @@ class TestPasswordInPromptSecurity:
         task.prompt = "my-secret-password-123"
         task.agent = "opencode"
         task.project_dir = "/tmp"
+        task.model = None
         argv = runner._build_command(task)
         # The prompt is embedded in the command line
         assert any("my-secret-password-123" in arg for arg in argv)
@@ -659,6 +663,7 @@ class TestBuildCommandSecurity:
         task.prompt = '; rm -rf / && echo "pwned"'
         task.agent = "opencode"
         task.project_dir = "/tmp"
+        task.model = None
         argv = runner._build_command(task)
         # The entire prompt should be a single argument, not split
         assert any('; rm -rf / && echo "pwned"' in arg for arg in argv)
@@ -672,6 +677,7 @@ class TestBuildCommandSecurity:
         task.prompt = "`whoami`"
         task.agent = "opencode"
         task.project_dir = "/tmp"
+        task.model = None
         argv = runner._build_command(task)
         assert any("`whoami`" in arg for arg in argv)
 
@@ -681,6 +687,7 @@ class TestBuildCommandSecurity:
         task.prompt = "$(cat /etc/passwd)"
         task.agent = "opencode"
         task.project_dir = "/tmp"
+        task.model = None
         argv = runner._build_command(task)
         assert any("$(cat /etc/passwd)" in arg for arg in argv)
 
@@ -690,6 +697,7 @@ class TestBuildCommandSecurity:
         task.prompt = "test"
         task.agent = "nonexistent"
         task.project_dir = "/tmp"
+        task.model = None
         argv = runner._build_command(task)
         assert argv[0] == "echo"
         assert "Unknown agent" in argv[1]
@@ -700,6 +708,7 @@ class TestBuildCommandSecurity:
         task.prompt = "test"
         task.agent = "opencode"
         task.project_dir = "/home/user/my project dir"
+        task.model = None
         argv = runner._build_command(task)
         # project_dir not used in opencode template, but verify no crash
         assert len(argv) >= 2

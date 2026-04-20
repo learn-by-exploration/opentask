@@ -64,6 +64,7 @@ async def _run() -> None:
         BotCommand("retry", "Re-queue a failed task"),
         BotCommand("project", "Set project directory"),
         BotCommand("agent", "Set agent"),
+        BotCommand("model", "Set model override"),
         BotCommand("output", "Get full task output"),
         BotCommand("repeat", "Repeat a task N times"),
         BotCommand("chains", "List saved chains"),

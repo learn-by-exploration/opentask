@@ -720,6 +720,7 @@ class TestHandleTextRecipeMatch:
         mock_task.id = 1
         mock_task.agent = "opencode"
         mock_task.project_dir = "/home/user/project"
+        mock_task.model = None
         mock_recipe = MagicMock()
         mock_recipe.name = "ros"
 
@@ -749,6 +750,7 @@ class TestHandleTextRecipeMatch:
         mock_task.id = 1
         mock_task.agent = "opencode"
         mock_task.project_dir = "/home/user/project"
+        mock_task.model = None
 
         with patch("app.telegram.bot.get_chat_prefs", new_callable=AsyncMock, return_value={"project_dir": None, "agent": None}), \
              patch("app.telegram.bot.enqueue_task", new_callable=AsyncMock, return_value=mock_task), \

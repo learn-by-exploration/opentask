@@ -293,12 +293,28 @@ class AgentRunner:
         )
         argv = shlex.split(tokenized)
         # Replace sentinels with actual values (each stays as one arg element)
-        return [
+        argv = [
             arg.replace(_PROMPT_SENTINEL, task.prompt).replace(
                 _DIR_SENTINEL, task.project_dir
             )
             for arg in argv
         ]
+
+        # Inject model flag if the task has a model set
+        if task.model:
+            model_flag_template = settings.agent_model_flags.get(task.agent)
+            if model_flag_template:
+                _MODEL_SENTINEL = "\x00MODEL\x00"
+                flag_tokenized = model_flag_template.replace("{model}", _MODEL_SENTINEL)
+                flag_parts = shlex.split(flag_tokenized)
+                flag_parts = [
+                    part.replace(_MODEL_SENTINEL, task.model)
+                    for part in flag_parts
+                ]
+                # Insert model flag right after the command name (argv[0])
+                argv[1:1] = flag_parts
+
+        return argv
 
     def _summarize(self, output: str, exit_code: int) -> str:
         """Extract a short summary from command output."""

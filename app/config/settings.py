@@ -20,6 +20,14 @@ class Settings(BaseSettings):
         "claude": "claude -p {prompt} --allowedTools computer mcp --no-input",
     }
 
+    # Model flag templates per agent: how to inject --model into the command
+    agent_model_flags: dict[str, str] = {
+        "opencode": "--model {model}",
+        "claude": "--model {model}",
+    }
+
+    default_model: str = ""  # empty = use agent default; e.g. "sonnet" or "anthropic/claude-sonnet-4"
+
     allowed_project_dirs: str = "~/ai,~/repos,~/projects"
 
     task_timeout_seconds: int = 1800

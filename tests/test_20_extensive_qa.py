@@ -205,7 +205,7 @@ class TestQA03CommandInjection:
         return AgentRunner()
 
     def _task(self, prompt, agent="test-agent", project_dir="/tmp"):
-        return SimpleNamespace(prompt=prompt, agent=agent, project_dir=project_dir)
+        return SimpleNamespace(prompt=prompt, agent=agent, project_dir=project_dir, model=None)
 
     def _build(self, prompt):
         from app.config.settings import settings
@@ -821,7 +821,7 @@ class TestQA13RunnerValidation:
             "test-agent": "echo {prompt}"
         })
         r = AgentRunner()
-        task = SimpleNamespace(prompt="hello world", agent="test-agent", project_dir="/tmp")
+        task = SimpleNamespace(prompt="hello world", agent="test-agent", project_dir="/tmp", model=None)
         cmd = r._build_command(task)
         assert isinstance(cmd, list)
         assert any("hello world" in a for a in cmd)
@@ -829,7 +829,7 @@ class TestQA13RunnerValidation:
     def test_build_command_unknown_agent_fallback(self):
         from app.core.runner import AgentRunner
         r = AgentRunner()
-        task = SimpleNamespace(prompt="test", agent="nonexistent_agent", project_dir="/tmp")
+        task = SimpleNamespace(prompt="test", agent="nonexistent_agent", project_dir="/tmp", model=None)
         cmd = r._build_command(task)
         # Should still produce a valid command (fallback behavior)
         assert isinstance(cmd, list)
@@ -1319,7 +1319,7 @@ class TestQA20DataIntegrity:
     async def test_get_chat_prefs_nonexistent_returns_defaults(self, session):
         from app.core.broker import get_chat_prefs
         prefs = await get_chat_prefs(88888)
-        assert prefs == {"project_dir": None, "agent": None}
+        assert prefs == {"project_dir": None, "agent": None, "model": None}
 
     @pytest.mark.asyncio
     async def test_set_and_get_chat_prefs(self, session):

@@ -859,7 +859,7 @@ class TestQA35BuildCommandSentinels:
         from app.core.runner import AgentRunner
         r = AgentRunner()
         with patch.object(settings, "agent_commands", {agent: template}):
-            task = SimpleNamespace(prompt=prompt, agent=agent, project_dir="/tmp")
+            task = SimpleNamespace(prompt=prompt, agent=agent, project_dir="/tmp", model=None)
             return r._build_command(task)
 
     def test_semicolon_as_single_arg(self):
@@ -890,7 +890,7 @@ class TestQA35BuildCommandSentinels:
     def test_unknown_agent_returns_echo(self):
         from app.core.runner import AgentRunner
         r = AgentRunner()
-        task = SimpleNamespace(prompt="test", agent="nonexistent", project_dir="/tmp")
+        task = SimpleNamespace(prompt="test", agent="nonexistent", project_dir="/tmp", model=None)
         cmd = r._build_command(task)
         assert cmd[0] == "echo"
 

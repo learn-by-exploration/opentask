@@ -46,6 +46,7 @@ from app.core.broker import (
     set_chat_pref,
     start_chain,
     switch_task_agent,
+    switch_task_model,
 )
 from app.core.models import ChainStatus, Task, TaskStatus
 
@@ -55,6 +56,7 @@ logger = logging.getLogger(__name__)
 
 _chat_project_dir: dict[int, str] = {}
 _chat_agent: dict[int, str] = {}
+_chat_model: dict[int, str] = {}
 _runner_ref = None  # set by build_app() to enable /cancel subprocess kill
 
 MAX_MSG_LEN = 4096
@@ -85,13 +87,15 @@ def _chat_id(update: Update) -> int:
 
 async def _load_prefs(chat_id: int) -> None:
     """Load persisted prefs into cache if not already loaded."""
-    if chat_id in _chat_project_dir or chat_id in _chat_agent:
+    if chat_id in _chat_project_dir or chat_id in _chat_agent or chat_id in _chat_model:
         return  # already in cache
     prefs = await get_chat_prefs(chat_id)
     if prefs["project_dir"]:
         _chat_project_dir[chat_id] = prefs["project_dir"]
     if prefs["agent"]:
         _chat_agent[chat_id] = prefs["agent"]
+    if prefs.get("model"):
+        _chat_model[chat_id] = prefs["model"]
 
 
 def _project_dir(chat_id: int) -> str:
@@ -100,6 +104,11 @@ def _project_dir(chat_id: int) -> str:
 
 def _agent(chat_id: int) -> str:
     return _chat_agent.get(chat_id, settings.default_agent)
+
+
+def _model(chat_id: int) -> str:
+    """Return current model for the chat, or empty string for agent default."""
+    return _chat_model.get(chat_id, settings.default_model)
 
 
 def _status_emoji(status: TaskStatus) -> str:
@@ -277,6 +286,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/retry <id> — re-queue a failed task\n"
         "/project <path> — set project dir\n"
         "/agent <name> — set agent\n"
+        "/model <name> — set model (sonnet, opus, etc.)\n"
+        "/setmodel <id> <name> — set model for a pending task\n"
         "/output <id> — get full output of a task\n\n"
         "*Repeat:*\n"
         "/repeat <N> <prompt> — repeat N times\n"
@@ -287,7 +298,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/chains — list all chains\n"
         "/delchain <name> — delete a chain\n\n"
         "*Recipes:*\n"
-        "/addrecipe <name> triggers:kw1,kw2 [agent:name]\n"
+        "/addrecipe <name> triggers:kw1,kw2 [agent:name] [model:name]\n"
         "/recipes — list recipes\n"
         "/recipe <name> — show recipe details\n"
         "/delrecipe <name> — delete a recipe\n\n"
@@ -411,6 +422,29 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             update,
             f"🤖 Current: `{_agent(_chat_id(update))}`\nAvailable: {available}",
         )
+
+
+@auth_required
+async def cmd_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Set or show the model override for the current chat."""
+    if context.args:
+        name = context.args[0]
+        if name.lower() in ("none", "default", "reset", "clear"):
+            chat_id = _chat_id(update)
+            _chat_model.pop(chat_id, None)
+            await set_chat_pref(chat_id, model="")
+            await _send(update, "🧠 Model reset to agent default")
+            return
+        chat_id = _chat_id(update)
+        _chat_model[chat_id] = name
+        await set_chat_pref(chat_id, model=name)
+        await _send(update, f"🧠 Model set to: `{name}`")
+    else:
+        current = _model(_chat_id(update))
+        if current:
+            await _send(update, f"🧠 Current model: `{current}`\nUse `/model none` to reset to agent default")
+        else:
+            await _send(update, "🧠 Using agent default model\nUse `/model <name>` to override (e.g. `sonnet`, `opus`, `anthropic/claude-sonnet-4`)")
 
 
 @auth_required
@@ -692,6 +726,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     chat_id = _chat_id(update)
     current_agent = _agent(chat_id)
+    current_model = _model(chat_id)
 
     try:
         task = await enqueue_task(
@@ -700,6 +735,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             agent=current_agent,
             chat_id=chat_id,
             msg_id=update.message.message_id,  # type: ignore[union-attr]
+            model=current_model or None,
         )
     except ValueError:
         await _send(update, "⚠️ Queue is full. Wait for tasks to complete.")
@@ -710,18 +746,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     project_display = task.project_dir.replace(os.path.expanduser('~'), '~')
+    model_display = f" model=`{task.model}`" if task.model else ""
 
     # Check for recipe match
     recipe = await match_recipe(prompt)
 
     # Build switch buttons for other agents
     other_agents = [a for a in settings.agent_commands if a != current_agent]
-    buttons_row = []
+    agent_buttons = []
     if other_agents:
-        buttons_row = [
+        agent_buttons = [
             InlineKeyboardButton(f"↻ {name}", callback_data=f"switch:{task.id}:{name}")
             for name in other_agents
         ]
+
+    # Build model switch button
+    model_buttons = [
+        InlineKeyboardButton(
+            f"🧠 Model" + (f": {task.model}" if task.model else ""),
+            callback_data=f"modelset:{task.id}",
+        ),
+    ]
 
     if recipe:
         # Offer to apply recipe
@@ -733,26 +778,26 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             InlineKeyboardButton("⏭ Skip", callback_data=f"recipeskip:{task.id}"),
         ]
         rows = [recipe_buttons]
-        if buttons_row:
-            rows.append(buttons_row)
+        if agent_buttons:
+            rows.append(agent_buttons)
+        rows.append(model_buttons)
         keyboard = InlineKeyboardMarkup(rows)
         await update.message.reply_text(  # type: ignore[union-attr]
-            f"📋 Queued #{task.id} (`{task.agent}`) in `{project_display}`\n"
+            f"📋 Queued #{task.id} (`{task.agent}`){model_display} in `{project_display}`\n"
             f"🧪 Recipe '{recipe.name}' matched — apply it?",
             reply_markup=keyboard,
             parse_mode=ParseMode.MARKDOWN,
         )
-    elif buttons_row:
-        keyboard = InlineKeyboardMarkup([buttons_row])
-        await update.message.reply_text(  # type: ignore[union-attr]
-            f"📋 Queued #{task.id} (`{task.agent}`) in `{project_display}`\n"
-            f"_Switch agent before it starts:_",
-            reply_markup=keyboard,
-            parse_mode=ParseMode.MARKDOWN,
-        )
     else:
+        rows = []
+        if agent_buttons:
+            rows.append(agent_buttons)
+        rows.append(model_buttons)
+        keyboard = InlineKeyboardMarkup(rows)
         await update.message.reply_text(  # type: ignore[union-attr]
-            f"📋 Queued #{task.id} (`{task.agent}`) in `{project_display}`",
+            f"📋 Queued #{task.id} (`{task.agent}`){model_display} in `{project_display}`\n"
+            f"_Switch agent/model before it starts:_",
+            reply_markup=keyboard,
             parse_mode=ParseMode.MARKDOWN,
         )
 
@@ -792,6 +837,106 @@ async def handle_agent_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text(  # type: ignore[union-attr]
             f"⚠️ Task #{task_id} already started or not found — can't switch."
         )
+
+
+@auth_required
+async def handle_model_set_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the 🧠 Model button — show model choices for a pending task."""
+    query = update.callback_query
+    await query.answer()  # type: ignore[union-attr]
+
+    data = query.data or ""  # type: ignore[union-attr]
+    # modelset:<task_id>
+    parts = data.split(":", 1)
+    if len(parts) != 2:
+        return
+    try:
+        task_id = int(parts[1])
+    except ValueError:
+        return
+
+    task = await get_task_by_id(task_id)
+    if task is None or task.status != TaskStatus.PENDING:
+        await query.edit_message_text(  # type: ignore[union-attr]
+            f"⚠️ Task #{task_id} already started or not found."
+        )
+        return
+
+    # Quick-pick model buttons: common aliases + clear
+    model_choices = ["sonnet", "opus", "haiku"]
+    buttons = [
+        InlineKeyboardButton(f"🧠 {m}", callback_data=f"modelswitch:{task_id}:{m}")
+        for m in model_choices
+    ]
+    buttons.append(
+        InlineKeyboardButton("🔄 Default", callback_data=f"modelswitch:{task_id}:__default__")
+    )
+    project_display = task.project_dir.replace(os.path.expanduser('~'), '~')
+    model_display = f" model=`{task.model}`" if task.model else ""
+    await query.edit_message_text(  # type: ignore[union-attr]
+        f"📋 Task #{task_id} (`{task.agent}`){model_display} in `{project_display}`\n"
+        f"_Pick a model or reply with_ `/setmodel {task_id} <model_name>`:",
+        reply_markup=InlineKeyboardMarkup([buttons]),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+@auth_required
+async def handle_model_switch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle model choice button — apply the selected model to a task."""
+    query = update.callback_query
+    await query.answer()  # type: ignore[union-attr]
+
+    data = query.data or ""  # type: ignore[union-attr]
+    # modelswitch:<task_id>:<model_name>
+    parts = data.split(":", 2)
+    if len(parts) != 3:
+        return
+    try:
+        task_id = int(parts[1])
+    except ValueError:
+        return
+    model_name = parts[2]
+
+    # __default__ means clear the model override
+    if model_name == "__default__":
+        model_name = ""
+
+    updated = await switch_task_model(task_id, model_name)
+    if updated:
+        project_display = updated.project_dir.replace(os.path.expanduser('~'), '~')
+        model_text = f" model=`{updated.model}`" if updated.model else " (agent default)"
+        await query.edit_message_text(  # type: ignore[union-attr]
+            f"📋 #{updated.id} (`{updated.agent}`){model_text} in `{project_display}`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    else:
+        await query.edit_message_text(  # type: ignore[union-attr]
+            f"⚠️ Task #{task_id} already started or not found — can't switch model."
+        )
+
+
+@auth_required
+async def cmd_setmodel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Set a specific model for a pending task: /setmodel <task_id> <model>"""
+    if not context.args or len(context.args) < 2:
+        await _send(update, "Usage: /setmodel <task\\_id> <model\\_name>")
+        return
+    try:
+        task_id = int(context.args[0])
+    except ValueError:
+        await _send(update, "Invalid task ID.")
+        return
+    model_name = context.args[1]
+    if model_name.lower() in ("none", "default", "reset", "clear"):
+        model_name = ""
+
+    updated = await switch_task_model(task_id, model_name)
+    if updated:
+        model_text = f"`{updated.model}`" if updated.model else "agent default"
+        await _send(update, f"🧠 Task #{task_id} model → {model_text}")
+    else:
+        await _send(update, f"⚠️ Task #{task_id} already started or not found.")
 
 
 @auth_required
@@ -848,6 +993,8 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             "/retry <id> — re-queue a failed task\n"
             "/project <path> — set project dir\n"
             "/agent <name> — set agent\n"
+            "/model <name> — set model (sonnet, opus, etc.)\n"
+            "/setmodel <id> <name> — set model for a pending task\n"
             "/output <id> — get full output of a task\n\n"
             "*Repeat:*\n"
             "/repeat <N> <prompt> — repeat N times\n"
@@ -858,7 +1005,7 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             "/chains — list all chains\n"
             "/delchain <name> — delete a chain\n\n"
             "*Recipes:*\n"
-            "/addrecipe <name> triggers:kw1,kw2 [agent:name]\n"
+            "/addrecipe <name> triggers:kw1,kw2 [agent:name] [model:name]\n"
             "/recipes — list recipes\n"
             "/recipe <name> — show recipe details\n"
             "/delrecipe <name> — delete a recipe\n\n"
@@ -868,12 +1015,14 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     elif action == "settings":
         agent = _agent(chat_id)
+        model = _model(chat_id)
         project = _project_dir(chat_id).replace(os.path.expanduser('~'), '~')
         available_agents = list(settings.agent_commands.keys())
 
         text = (
             f"⚙️ *Settings*\n\n"
             f"🤖 Agent: `{agent}`\n"
+            f"🧠 Model: `{model or 'agent default'}`\n"
             f"📁 Project: `{project}`\n"
         )
         buttons = [
@@ -1033,7 +1182,7 @@ async def cmd_addrecipe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _send(
             update,
             "Usage: /addrecipe <name> triggers:kw1,kw2 [agent:name] "
-            "[prefix:text] [suffix:text] [setup:cmd1|cmd2] [skills:s1,s2]",
+            "[model:name] [prefix:text] [suffix:text] [setup:cmd1|cmd2] [skills:s1,s2]",
         )
         return
 
@@ -1045,6 +1194,7 @@ async def cmd_addrecipe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     rest = " ".join(context.args[1:])
     triggers: list[str] = []
     agent: str | None = None
+    model: str | None = None
     project_dir: str | None = None
     prefix: str | None = None
     suffix: str | None = None
@@ -1061,6 +1211,10 @@ async def cmd_addrecipe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     m = re.search(r'agent:([^\s]+)', rest)
     if m:
         agent = m.group(1)
+    # Extract model:...
+    m = re.search(r'model:([^\s]+)', rest)
+    if m:
+        model = m.group(1)
     # Extract project:...
     m = re.search(r'project:([^\s]+)', rest)
     if m:
@@ -1092,6 +1246,7 @@ async def cmd_addrecipe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             name=name,
             triggers=triggers,
             agent=agent,
+            model=model,
             project_dir=project_dir,
             setup_commands=setup_commands,
             skills=skills,
@@ -1107,6 +1262,8 @@ async def cmd_addrecipe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     lines.append(f"  Triggers: {', '.join(recipe.triggers)}")
     if recipe.agent:
         lines.append(f"  Agent: {recipe.agent}")
+    if recipe.model:
+        lines.append(f"  Model: {recipe.model}")
     if recipe.setup_commands:
         lines.append(f"  Setup: {len(recipe.setup_commands)} command(s)")
     if recipe.skills:
@@ -1150,6 +1307,8 @@ async def cmd_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     lines.append(f"  Triggers: {', '.join(recipe.triggers)}")
     if recipe.agent:
         lines.append(f"  Agent: `{recipe.agent}`")
+    if recipe.model:
+        lines.append(f"  Model: `{recipe.model}`")
     if recipe.project_dir:
         lines.append(f"  Project dir: `{recipe.project_dir}`")
     if recipe.setup_commands:
@@ -1278,6 +1437,8 @@ def build_app(runner=None) -> Application:
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("project", cmd_project))
     app.add_handler(CommandHandler("agent", cmd_agent))
+    app.add_handler(CommandHandler("model", cmd_model))
+    app.add_handler(CommandHandler("setmodel", cmd_setmodel))
     app.add_handler(CommandHandler("output", cmd_output))
     app.add_handler(CommandHandler("retry", cmd_retry))
     app.add_handler(CommandHandler("repeat", cmd_repeat))
@@ -1291,6 +1452,8 @@ def build_app(runner=None) -> Application:
     app.add_handler(CommandHandler("recipe", cmd_recipe))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(handle_agent_callback, pattern=r"^switch:"))
+    app.add_handler(CallbackQueryHandler(handle_model_set_callback, pattern=r"^modelset:"))
+    app.add_handler(CallbackQueryHandler(handle_model_switch_callback, pattern=r"^modelswitch:"))
     app.add_handler(CallbackQueryHandler(handle_menu_callback, pattern=r"^menu:"))
     app.add_handler(CallbackQueryHandler(handle_setagent_callback, pattern=r"^setagent:"))
     app.add_handler(CallbackQueryHandler(handle_task_action_callback, pattern=r"^task(retry|output):"))
