@@ -16,10 +16,10 @@ env/
 .env
 
 # Database
-data/
-*.db
-*.sqlite
-*.sqlite3
+# data/
+# *.db
+# *.sqlite
+# *.sqlite3
 
 # IDE
 .vscode/
