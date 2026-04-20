@@ -1,0 +1,365 @@
+"""Agent runner — executes tasks via subprocess with timeout and cancellation."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import shlex
+import signal
+import time
+from collections.abc import Callable, Coroutine
+from typing import Any
+
+MAX_OUTPUT_BYTES = 2 * 1024 * 1024  # 2 MB cap on stored output
+
+from app.config.settings import settings
+from app.core.broker import advance_chain, complete_task, get_chain_by_id, maybe_reenqueue, pick_next_task
+from app.core.models import ChainStatus, Task
+
+logger = logging.getLogger(__name__)
+
+NotifyCallback = Callable[[Task], Coroutine[Any, Any, None]]
+
+
+class AgentRunner:
+    """Polls for pending tasks and executes them one at a time."""
+
+    def __init__(self, on_complete: NotifyCallback | None = None) -> None:
+        self._on_complete = on_complete
+        self._chain_notify: Callable | None = None
+        self._progress_notify: Callable | None = None
+        self._typing_notify: Callable | None = None
+        self._running = False
+        self._current_process: asyncio.subprocess.Process | None = None
+        self._current_task_id: int | None = None
+        self._wake_event = asyncio.Event()
+        self._backoff = 0
+
+    def notify_new_task(self) -> None:
+        """Signal the poll loop that a new task is available."""
+        self._wake_event.set()
+
+    @staticmethod
+    def _safe_env() -> dict[str, str]:
+        """Return a copy of env with sensitive variables stripped."""
+        sensitive_prefixes = ("TELEGRAM_", "BOT_TOKEN", "SLACK_", "API_KEY", "SECRET")
+        return {
+            k: v
+            for k, v in os.environ.items()
+            if not any(k.upper().startswith(p) for p in sensitive_prefixes)
+        }
+
+    @staticmethod
+    def _is_allowed_dir(real_path: str) -> bool:
+        """Check if a resolved path is under an allowed project directory."""
+        for allowed in settings.allowed_project_dirs:
+            allowed_real = os.path.realpath(os.path.expanduser(allowed))
+            if real_path == allowed_real or real_path.startswith(allowed_real + os.sep):
+                return True
+        return False
+
+    def _kill_process(self, proc: asyncio.subprocess.Process) -> None:
+        """Send SIGTERM to the entire process group if isolated, else just the process."""
+        try:
+            if proc.pid:
+                pgid = os.getpgid(proc.pid)
+                # Only kill the group if the subprocess is a group leader
+                # (i.e. started with start_new_session=True)
+                if pgid == proc.pid:
+                    os.killpg(pgid, signal.SIGTERM)
+                else:
+                    proc.terminate()
+            else:
+                proc.terminate()
+        except (ProcessLookupError, PermissionError):
+            proc.terminate()
+
+    async def start(self) -> None:
+        """Run the poll loop until stopped."""
+        self._running = True
+        logger.info("AgentRunner started")
+        while self._running:
+            try:
+                task = await pick_next_task()
+            except Exception:
+                logger.exception("Error polling for tasks")
+                self._backoff = min(max(self._backoff * 2, 2), 60)
+                try:
+                    await asyncio.wait_for(self._wake_event.wait(), timeout=self._backoff)
+                except asyncio.TimeoutError:
+                    pass
+                self._wake_event.clear()
+                continue
+
+            if task is None:
+                self._backoff = 0
+                self._wake_event.clear()
+                try:
+                    await asyncio.wait_for(self._wake_event.wait(), timeout=30)
+                except asyncio.TimeoutError:
+                    pass
+                continue  # pragma: no cover  -- CPython 3.9 bytecode optimization makes this untraceable
+
+            self._backoff = 0
+            self._wake_event.clear()
+            safe_prompt = task.prompt.replace("\n", "\\n").replace("\r", "\\r")
+            logger.info("Executing task #%d: %.80s", task.id, safe_prompt)
+            # Send typing indicator when task starts
+            if self._typing_notify:
+                try:
+                    await self._typing_notify(task.telegram_chat_id)
+                except Exception:
+                    pass
+            await self._execute(task)
+
+    async def _execute(self, task: Task) -> None:
+        """Run the agent command as a subprocess."""
+        self._current_task_id = task.id
+
+        # Validate project_dir exists
+        cwd = os.path.expanduser(task.project_dir)
+        if not os.path.isdir(cwd):
+            logger.error("Task #%d: project_dir does not exist: %s", task.id, cwd)
+            updated = await complete_task(
+                task_id=task.id,
+                exit_code=-1,
+                output_summary=f"Directory not found: {task.project_dir}",
+                full_output="",
+                error_message=f"project_dir does not exist: {task.project_dir}",
+            )
+            if updated:
+                await self._after_complete(updated)
+            return
+
+        # Runtime validation: ensure project_dir is still in allowed paths
+        real_cwd = os.path.realpath(cwd)
+        if not self._is_allowed_dir(real_cwd):
+            logger.error("Task #%d: project_dir not in allowed paths at runtime: %s", task.id, cwd)
+            updated = await complete_task(
+                task_id=task.id,
+                exit_code=-1,
+                output_summary="Project directory not in allowed paths",
+                full_output="",
+                error_message="project_dir validation failed at runtime",
+            )
+            if updated:
+                await self._after_complete(updated)
+            return
+
+        try:
+            argv = self._build_command(task)
+            safe_prompt = task.prompt.replace("\n", "\\n").replace("\r", "\\r")
+            logger.debug("Command: %s (prompt: %.40s)", argv[0], safe_prompt)
+            process = await asyncio.create_subprocess_exec(
+                *argv,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=cwd,
+                env=self._safe_env(),
+                start_new_session=True,
+            )
+            self._current_process = process
+
+            try:
+                raw_output = await asyncio.wait_for(
+                    self._read_output(process, task),
+                    timeout=settings.task_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Task #%d timed out, terminating", task.id)
+                partial = b""
+                if process.stdout:
+                    try:
+                        partial = await asyncio.wait_for(
+                            process.stdout.read(MAX_OUTPUT_BYTES), timeout=2,
+                        )
+                    except (asyncio.TimeoutError, Exception):
+                        pass
+                self._kill_process(process)
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    process.kill()
+                raw_output = partial + b"\n\nTIMEOUT: task exceeded time limit"
+
+            output = raw_output[:MAX_OUTPUT_BYTES].decode("utf-8", errors="replace")
+            exit_code = process.returncode if process.returncode is not None else -1
+            summary = self._summarize(output, exit_code)
+
+            updated = await complete_task(
+                task_id=task.id,
+                exit_code=exit_code,
+                output_summary=summary,
+                full_output=output,
+                error_message=f"Exit code {exit_code}" if exit_code != 0 else None,
+            )
+            if updated:
+                await self._after_complete(updated)
+
+        except Exception:
+            logger.exception("Unexpected error executing task #%d", task.id)
+            updated = await complete_task(
+                task_id=task.id,
+                exit_code=-1,
+                output_summary="Internal runner error",
+                full_output="",
+                error_message="Runner crashed — see server logs",
+            )
+            if updated:
+                await self._after_complete(updated)
+        finally:
+            self._current_process = None
+            self._current_task_id = None
+
+    async def _read_output(
+        self, process: asyncio.subprocess.Process, task: Task,
+    ) -> bytes:
+        """Read stdout line-by-line, sending progress updates periodically."""
+        chunks: list[bytes] = []
+        total = 0
+        last_progress = time.monotonic()
+        recent_lines: list[str] = []
+        interval = settings.progress_interval_seconds
+
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
+            if total < MAX_OUTPUT_BYTES:
+                chunks.append(line)
+                total += len(line)
+
+            decoded = line.decode("utf-8", errors="replace").rstrip()
+            recent_lines.append(decoded)
+            if len(recent_lines) > 5:
+                recent_lines = recent_lines[-5:]
+
+            now = time.monotonic()
+            if self._progress_notify and (now - last_progress) >= interval:
+                last_progress = now
+                snippet = "\n".join(recent_lines)
+                try:
+                    await self._progress_notify(
+                        task.telegram_chat_id,
+                        f"⏳ Task #{task.id} progress:\n```\n{snippet}\n```",
+                    )
+                except Exception:
+                    logger.debug("Progress notify failed for task #%d", task.id)
+                if self._typing_notify:
+                    try:
+                        await self._typing_notify(task.telegram_chat_id)
+                    except Exception:
+                        pass
+
+        await process.wait()
+        return b"".join(chunks)[:MAX_OUTPUT_BYTES]
+
+    def _build_command(self, task: Task) -> list[str]:
+        """Build the command argv list from agent_commands template.
+
+        Uses sentinel tokens so that `shlex.split` treats each placeholder
+        value as a single argument regardless of spaces or special chars.
+        """
+        template = settings.agent_commands.get(task.agent)
+        if template is None:
+            return ["echo", f"Unknown agent: {task.agent}"]
+
+        # Use sentinel tokens that won't appear in real templates
+        _PROMPT_SENTINEL = "\x00PROMPT\x00"
+        _DIR_SENTINEL = "\x00DIR\x00"
+
+        tokenized = template.replace("{prompt}", _PROMPT_SENTINEL).replace(
+            "{project_dir}", _DIR_SENTINEL
+        )
+        argv = shlex.split(tokenized)
+        # Replace sentinels with actual values (each stays as one arg element)
+        return [
+            arg.replace(_PROMPT_SENTINEL, task.prompt).replace(
+                _DIR_SENTINEL, task.project_dir
+            )
+            for arg in argv
+        ]
+
+    def _summarize(self, output: str, exit_code: int) -> str:
+        """Extract a short summary from command output."""
+        max_chars = settings.output_summary_max_chars
+        lines = output.strip().splitlines()
+
+        if exit_code != 0:
+            error_keywords = ("error", "traceback", "exception", "fatal", "failed")
+            error_lines = [
+                ln for ln in lines if any(kw in ln.lower() for kw in error_keywords)
+            ]
+            if error_lines:
+                return "\n".join(error_lines[-5:])[:max_chars]
+
+        tail = "\n".join(lines[-10:])
+        return tail[:max_chars] if tail else "(no output)"
+
+    async def _after_complete(self, task: Task) -> None:
+        """Handle post-completion: notify, repeat, chain advance."""
+        if self._on_complete:
+            try:
+                await self._on_complete(task)
+            except Exception:
+                logger.exception("Notification callback failed for task #%d", task.id)
+
+        # Repeat logic: re-enqueue if conditions met
+        requeued = await maybe_reenqueue(task)
+        if requeued:
+            logger.info("Repeat: task #%d → re-enqueued as #%d", task.id, requeued.id)
+            return  # don't advance chain while repeating
+
+        # Chain logic: advance to next step
+        if task.chain_id is not None:
+            try:
+                next_task = await advance_chain(task)
+            except Exception:
+                logger.exception("advance_chain failed for task #%d — marking chain as failed", task.id)
+                next_task = None
+            if next_task:
+                logger.info(
+                    "Chain: task #%d done → next step #%d (step %d)",
+                    task.id, next_task.id, next_task.chain_step,
+                )
+            else:
+                # Chain ended (completed or failed) — send chain-level notification
+                await self._notify_chain_event(task)
+
+    async def _notify_chain_event(self, task: Task) -> None:
+        """Send a chain-level notification when a chain completes or fails."""
+        if not self._chain_notify or task.chain_id is None:
+            return
+        try:
+            chain = await get_chain_by_id(task.chain_id)
+            if chain is None:
+                return
+            if chain.status == ChainStatus.FAILED:
+                msg = f"⛓️ Chain '{chain.name}' failed at step {(task.chain_step or 0) + 1}/{chain.total_steps}"
+            elif chain.status == ChainStatus.COMPLETED:
+                msg = f"⛓️ Chain '{chain.name}' completed all {chain.total_steps} steps"
+            else:
+                return  # still running or idle — no notification needed
+            # Send directly via the notification callback's bot
+            if self._chain_notify:
+                await self._chain_notify(task.telegram_chat_id, msg)
+        except Exception:
+            logger.exception("Chain notification failed for task #%d", task.id)
+
+    async def cancel_current(self) -> bool:
+        """Cancel the currently running subprocess. Returns True if cancelled."""
+        if self._current_process is None:
+            return False
+        self._kill_process(self._current_process)
+        try:
+            await asyncio.wait_for(self._current_process.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            self._current_process.kill()
+        return True
+
+    def stop(self) -> None:
+        """Signal the poll loop to exit after the current task."""
+        self._running = False
+        self._wake_event.set()
+        logger.info("AgentRunner stopping")

@@ -1,0 +1,61 @@
+"""Application settings loaded from environment variables."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    telegram_bot_token: str
+    allowed_user_ids: list[int] = []
+
+    default_agent: str = "opencode"
+    default_project_dir: str = "~/ai"
+
+    agent_commands: dict[str, str] = {
+        "opencode": "opencode -p {prompt} --dir {project_dir}",
+        "aider": "aider --message {prompt} --yes --no-git",
+    }
+
+    allowed_project_dirs: list[str] = ["~/ai", "~/repos", "~/projects"]
+
+    task_timeout_seconds: int = 1800
+    max_queue_size: int = 20
+    progress_interval_seconds: int = 30
+
+    db_path: str = "./data/taskpilot.db"
+    output_summary_max_chars: int = 500
+
+    # Web dashboard
+    dashboard_enabled: bool = True
+    dashboard_host: str = "127.0.0.1"
+    dashboard_port: int = 8095
+    dashboard_token: str = ""  # optional bearer token; empty = no auth
+
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+
+    @field_validator("allowed_user_ids", mode="before")
+    @classmethod
+    def parse_user_ids(cls, v: str | list[int] | int) -> list[int]:
+        if isinstance(v, int):
+            return [v]
+        if isinstance(v, str):
+            return [int(uid.strip()) for uid in v.split(",") if uid.strip()]
+        return v
+
+    @field_validator("progress_interval_seconds")
+    @classmethod
+    def validate_progress_interval(cls, v: int) -> int:
+        if v < 5:
+            raise ValueError("progress_interval_seconds must be >= 5")
+        return v
+
+    @property
+    def db_url(self) -> str:
+        return f"sqlite+aiosqlite:///{self.db_path}"
+
+
+settings = Settings()
