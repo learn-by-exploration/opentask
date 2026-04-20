@@ -1011,3 +1011,222 @@ class TestWorkerScript:
         status, body = _api("http://localhost:99999", "POST", "/api/test", {"key": "val"}, "")
         assert status == 0
         assert body is None
+
+
+# ── switch_task_worker broker tests ────────────────────────────────
+
+class TestSwitchTaskWorker:
+    """Test the switch_task_worker broker function."""
+
+    @pytest.mark.asyncio
+    async def test_switch_to_remote_worker(self, patch_db, seed_task):
+        from app.core.broker import switch_task_worker
+        updated = await switch_task_worker(seed_task.id, "server2")
+        assert updated is not None
+        assert updated.assigned_to == "server2"
+
+    @pytest.mark.asyncio
+    async def test_switch_to_local(self, patch_db):
+        from app.core.broker import switch_task_worker, enqueue_task
+        task = await enqueue_task(prompt="remote task", project_dir="/tmp", agent="opencode", assigned_to="server2")
+        updated = await switch_task_worker(task.id, "")
+        assert updated is not None
+        assert updated.assigned_to is None
+
+    @pytest.mark.asyncio
+    async def test_switch_running_task_fails(self, patch_db):
+        from app.core.broker import enqueue_task, pick_next_task, switch_task_worker
+        task = await enqueue_task(prompt="test", project_dir="/tmp", agent="opencode")
+        await pick_next_task()  # takes it to RUNNING
+        result = await switch_task_worker(task.id, "server2")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_switch_nonexistent_task(self, patch_db):
+        from app.core.broker import switch_task_worker
+        result = await switch_task_worker(9999, "server2")
+        assert result is None
+
+
+# ── Worker switch callback bot tests ──────────────────────────────
+
+class TestWorkerSwitchCallback:
+    """Test the workerswitch callback handler in the bot."""
+
+    @pytest.mark.asyncio
+    async def test_switch_to_worker(self, patch_db):
+        from unittest.mock import MagicMock, AsyncMock, patch
+        from app.telegram.bot import handle_worker_switch_callback
+
+        updated = MagicMock()
+        updated.id = 42
+        updated.agent = "opencode"
+        updated.assigned_to = "server2"
+        updated.project_dir = "/tmp"
+
+        with patch("app.telegram.bot.switch_task_worker", new_callable=AsyncMock, return_value=updated), \
+             patch("app.telegram.bot._load_prefs", new_callable=AsyncMock):
+            update = MagicMock()
+            query = MagicMock()
+            query.answer = AsyncMock()
+            query.data = "workerswitch:42:server2"
+            query.edit_message_text = AsyncMock()
+            update.callback_query = query
+            update.effective_user.id = 12345
+            ctx = MagicMock()
+            await handle_worker_switch_callback(update, ctx)
+            assert "server2" in query.edit_message_text.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_switch_to_local(self, patch_db):
+        from unittest.mock import MagicMock, AsyncMock, patch
+        from app.telegram.bot import handle_worker_switch_callback
+
+        updated = MagicMock()
+        updated.id = 42
+        updated.agent = "opencode"
+        updated.assigned_to = None
+        updated.project_dir = "/tmp"
+
+        with patch("app.telegram.bot.switch_task_worker", new_callable=AsyncMock, return_value=updated), \
+             patch("app.telegram.bot._load_prefs", new_callable=AsyncMock):
+            update = MagicMock()
+            query = MagicMock()
+            query.answer = AsyncMock()
+            query.data = "workerswitch:42:__local__"
+            query.edit_message_text = AsyncMock()
+            update.callback_query = query
+            update.effective_user.id = 12345
+            ctx = MagicMock()
+            await handle_worker_switch_callback(update, ctx)
+            assert "local" in query.edit_message_text.call_args[0][0].lower()
+
+    @pytest.mark.asyncio
+    async def test_switch_task_gone(self, patch_db):
+        from unittest.mock import MagicMock, AsyncMock, patch
+        from app.telegram.bot import handle_worker_switch_callback
+
+        with patch("app.telegram.bot.switch_task_worker", new_callable=AsyncMock, return_value=None), \
+             patch("app.telegram.bot._load_prefs", new_callable=AsyncMock):
+            update = MagicMock()
+            query = MagicMock()
+            query.answer = AsyncMock()
+            query.data = "workerswitch:42:server2"
+            query.edit_message_text = AsyncMock()
+            update.callback_query = query
+            update.effective_user.id = 12345
+            ctx = MagicMock()
+            await handle_worker_switch_callback(update, ctx)
+            assert "already started" in query.edit_message_text.call_args[0][0]
+
+
+# ── Worker buttons in handle_text ─────────────────────────────────
+
+class TestWorkerButtonsInHandleText:
+    """Test that worker buttons appear when known_workers is configured."""
+
+    @pytest.mark.asyncio
+    async def test_worker_buttons_shown_when_configured(self, patch_db):
+        from unittest.mock import MagicMock, AsyncMock, patch
+        from app.telegram.bot import handle_text, _chat_model, _chat_agent
+
+        task = MagicMock()
+        task.id = 1
+        task.agent = "opencode"
+        task.model = None
+        task.assigned_to = None
+        task.project_dir = "/tmp"
+
+        with patch("app.telegram.bot.enqueue_task", new_callable=AsyncMock, return_value=task), \
+             patch("app.telegram.bot.match_recipe", new_callable=AsyncMock, return_value=None), \
+             patch("app.telegram.bot._load_prefs", new_callable=AsyncMock), \
+             patch("app.telegram.bot.settings") as mock_settings:
+            mock_settings.agent_commands = {"opencode": "opencode run {prompt}"}
+            mock_settings.known_workers_list = ["server2", "server3"]
+            mock_settings.allowed_user_ids = {12345}
+
+            update = MagicMock()
+            update.effective_user.id = 12345
+            update.message.text = "fix the bug"
+            update.message.message_id = 1
+            update.message.reply_text = AsyncMock()
+            update.effective_chat.id = 12345
+            ctx = MagicMock()
+            _chat_model.pop(12345, None)
+            _chat_agent[12345] = "opencode"
+
+            await handle_text(update, ctx)
+            reply = update.message.reply_text
+            assert reply.called
+            kwargs = reply.call_args[1] if reply.call_args[1] else {}
+            markup = kwargs.get("reply_markup")
+            assert markup is not None
+            all_buttons = [btn for row in markup.inline_keyboard for btn in row]
+            worker_btns = [b for b in all_buttons if "workerswitch:" in (b.callback_data or "")]
+            assert len(worker_btns) >= 2  # server2, server3
+
+    @pytest.mark.asyncio
+    async def test_no_worker_buttons_when_not_configured(self, patch_db):
+        from unittest.mock import MagicMock, AsyncMock, patch
+        from app.telegram.bot import handle_text, _chat_model, _chat_agent
+
+        task = MagicMock()
+        task.id = 1
+        task.agent = "opencode"
+        task.model = None
+        task.assigned_to = None
+        task.project_dir = "/tmp"
+
+        with patch("app.telegram.bot.enqueue_task", new_callable=AsyncMock, return_value=task), \
+             patch("app.telegram.bot.match_recipe", new_callable=AsyncMock, return_value=None), \
+             patch("app.telegram.bot._load_prefs", new_callable=AsyncMock), \
+             patch("app.telegram.bot.settings") as mock_settings:
+            mock_settings.agent_commands = {"opencode": "opencode run {prompt}"}
+            mock_settings.known_workers_list = []
+            mock_settings.allowed_user_ids = {12345}
+
+            update = MagicMock()
+            update.effective_user.id = 12345
+            update.message.text = "fix the bug"
+            update.message.message_id = 1
+            update.message.reply_text = AsyncMock()
+            update.effective_chat.id = 12345
+            ctx = MagicMock()
+            _chat_model.pop(12345, None)
+            _chat_agent[12345] = "opencode"
+
+            await handle_text(update, ctx)
+            reply = update.message.reply_text
+            assert reply.called
+            kwargs = reply.call_args[1] if reply.call_args[1] else {}
+            markup = kwargs.get("reply_markup")
+            assert markup is not None
+            all_buttons = [btn for row in markup.inline_keyboard for btn in row]
+            worker_btns = [b for b in all_buttons if "workerswitch:" in (b.callback_data or "")]
+            assert len(worker_btns) == 0
+
+
+# ── known_workers setting tests ───────────────────────────────────
+
+class TestKnownWorkersSetting:
+    """Test the known_workers setting and its list property."""
+
+    def test_known_workers_list_empty(self):
+        from app.config.settings import Settings
+        s = Settings(telegram_bot_token="test", allowed_user_ids="12345", known_workers="")
+        assert s.known_workers_list == []
+
+    def test_known_workers_list_single(self):
+        from app.config.settings import Settings
+        s = Settings(telegram_bot_token="test", allowed_user_ids="12345", known_workers="server2")
+        assert s.known_workers_list == ["server2"]
+
+    def test_known_workers_list_multiple(self):
+        from app.config.settings import Settings
+        s = Settings(telegram_bot_token="test", allowed_user_ids="12345", known_workers="server2,server3,gpu-box")
+        assert s.known_workers_list == ["server2", "server3", "gpu-box"]
+
+    def test_known_workers_list_with_spaces(self):
+        from app.config.settings import Settings
+        s = Settings(telegram_bot_token="test", allowed_user_ids="12345", known_workers=" server2 , server3 ")
+        assert s.known_workers_list == ["server2", "server3"]

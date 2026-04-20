@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     # Skills directory for installed skill packages
     skills_dir: str = "~/.taskpilot/skills"
 
+    # Known remote workers (comma-separated names shown as buttons in Telegram)
+    known_workers: str = ""
+
     # Web dashboard
     dashboard_enabled: bool = True
     dashboard_host: str = "127.0.0.1"
@@ -69,6 +72,13 @@ class Settings(BaseSettings):
         if v < 5:
             raise ValueError("progress_interval_seconds must be >= 5")
         return v
+
+    @property
+    def known_workers_list(self) -> list[str]:
+        v = self.known_workers
+        if isinstance(v, list):
+            return v
+        return [w.strip() for w in v.split(",") if w.strip()]
 
     @property
     def db_url(self) -> str:

@@ -624,8 +624,8 @@ class TestHandleTextModel:
         markup = kwargs.get("reply_markup")
         assert markup is not None
         all_buttons = [btn for row in markup.inline_keyboard for btn in row]
-        model_btns = [b for b in all_buttons if "modelset:" in (b.callback_data or "")]
-        assert len(model_btns) >= 1
+        model_btns = [b for b in all_buttons if "modelswitch:" in (b.callback_data or "")]
+        assert len(model_btns) >= 3  # sonnet, opus, haiku shown directly
 
 
 # ── Bot: handle_model_set_callback ─────────────────────────────────
@@ -861,6 +861,7 @@ class TestBuildAppModel:
                     patterns.append(p)
         assert any("modelset" in p for p in patterns)
         assert any("modelswitch" in p for p in patterns)
+        assert any("workerswitch" in p for p in patterns)
 
 
 # ── Bot: recipe addrecipe with model ───────────────────────────────

@@ -48,6 +48,7 @@ from app.core.broker import (
     start_chain,
     switch_task_agent,
     switch_task_model,
+    switch_task_worker,
 )
 from app.core.models import ChainStatus, Task, TaskStatus
 
@@ -863,13 +864,38 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             for name in other_agents
         ]
 
-    # Build model switch button
+    # Build direct model choice buttons (no two-step — task starts fast)
+    model_choices = ["sonnet", "opus", "haiku"]
     model_buttons = [
-        InlineKeyboardButton(
-            f"🧠 Model" + (f": {task.model}" if task.model else ""),
-            callback_data=f"modelset:{task.id}",
-        ),
+        InlineKeyboardButton(f"🧠 {m}", callback_data=f"modelswitch:{task.id}:{m}")
+        for m in model_choices
     ]
+
+    # Build worker/server buttons from known_workers setting
+    worker_names = settings.known_workers_list
+    worker_buttons = []
+    if worker_names:
+        if not assigned_to:
+            # Show "🖥 local" as current, plus each remote worker
+            worker_buttons = [
+                InlineKeyboardButton(
+                    f"🖥 {w}", callback_data=f"workerswitch:{task.id}:{w}"
+                )
+                for w in worker_names
+            ]
+        else:
+            # Already assigned — show local + other workers
+            worker_buttons = [
+                InlineKeyboardButton(
+                    "🖥 local", callback_data=f"workerswitch:{task.id}:__local__"
+                )
+            ]
+            worker_buttons += [
+                InlineKeyboardButton(
+                    f"🖥 {w}", callback_data=f"workerswitch:{task.id}:{w}"
+                )
+                for w in worker_names if w != assigned_to
+            ]
 
     if recipe:
         # Offer to apply recipe
@@ -884,6 +910,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if agent_buttons:
             rows.append(agent_buttons)
         rows.append(model_buttons)
+        if worker_buttons:
+            rows.append(worker_buttons)
         keyboard = InlineKeyboardMarkup(rows)
         await update.message.reply_text(  # type: ignore[union-attr]
             f"📋 Queued #{task.id} (`{task.agent}`){model_display}{worker_display} in `{project_display}`\n"
@@ -896,10 +924,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if agent_buttons:
             rows.append(agent_buttons)
         rows.append(model_buttons)
+        if worker_buttons:
+            rows.append(worker_buttons)
         keyboard = InlineKeyboardMarkup(rows)
         await update.message.reply_text(  # type: ignore[union-attr]
             f"📋 Queued #{task.id} (`{task.agent}`){model_display}{worker_display} in `{project_display}`\n"
-            f"_Switch agent/model before it starts:_",
+            f"_Switch agent/model/server before it starts:_",
             reply_markup=keyboard,
             parse_mode=ParseMode.MARKDOWN,
         )
@@ -1016,6 +1046,41 @@ async def handle_model_switch_callback(update: Update, context: ContextTypes.DEF
     else:
         await query.edit_message_text(  # type: ignore[union-attr]
             f"⚠️ Task #{task_id} already started or not found — can't switch model."
+        )
+
+
+@auth_required
+async def handle_worker_switch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle 🖥 worker button — reassign a pending task to a different server."""
+    query = update.callback_query
+    await query.answer()  # type: ignore[union-attr]
+
+    data = query.data or ""  # type: ignore[union-attr]
+    # workerswitch:<task_id>:<worker_name>
+    parts = data.split(":", 2)
+    if len(parts) != 3:
+        return
+    try:
+        task_id = int(parts[1])
+    except ValueError:
+        return
+    worker_name = parts[2]
+
+    # __local__ means clear assignment (run on local machine)
+    if worker_name == "__local__":
+        worker_name = ""
+
+    updated = await switch_task_worker(task_id, worker_name)
+    if updated:
+        project_display = updated.project_dir.replace(os.path.expanduser('~'), '~')
+        worker_text = f" → @{updated.assigned_to}" if updated.assigned_to else " (local)"
+        await query.edit_message_text(  # type: ignore[union-attr]
+            f"📋 #{updated.id} (`{updated.agent}`){worker_text} in `{project_display}`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    else:
+        await query.edit_message_text(  # type: ignore[union-attr]
+            f"⚠️ Task #{task_id} already started or not found — can't switch server."
         )
 
 
@@ -1582,6 +1647,7 @@ def build_app(runner=None) -> Application:
     app.add_handler(CallbackQueryHandler(handle_agent_callback, pattern=r"^switch:"))
     app.add_handler(CallbackQueryHandler(handle_model_set_callback, pattern=r"^modelset:"))
     app.add_handler(CallbackQueryHandler(handle_model_switch_callback, pattern=r"^modelswitch:"))
+    app.add_handler(CallbackQueryHandler(handle_worker_switch_callback, pattern=r"^workerswitch:"))
     app.add_handler(CallbackQueryHandler(handle_menu_callback, pattern=r"^menu:"))
     app.add_handler(CallbackQueryHandler(handle_setagent_callback, pattern=r"^setagent:"))
     app.add_handler(CallbackQueryHandler(handle_task_action_callback, pattern=r"^task(retry|output|followup):"))

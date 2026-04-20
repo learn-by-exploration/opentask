@@ -111,6 +111,22 @@ async def switch_task_model(task_id: int, new_model: str) -> Task | None:
         return task
 
 
+async def switch_task_worker(task_id: int, worker_name: str) -> Task | None:
+    """Switch the assigned worker for a PENDING task. Empty string = local."""
+    session = await get_session()
+    async with session, session.begin():
+        result = await session.execute(
+            select(Task).where(Task.id == task_id, Task.status == TaskStatus.PENDING)
+        )
+        task = result.scalar_one_or_none()
+        if task is None:
+            return None
+        task.assigned_to = worker_name if worker_name else None
+        await session.flush()
+        await session.refresh(task)
+        return task
+
+
 async def enqueue_followup(
     parent_task_id: int,
     prompt: str,
