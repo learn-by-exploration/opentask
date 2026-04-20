@@ -1,0 +1,24 @@
+services:
+  taskpilot:
+    build: .
+    container_name: taskpilot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Override dashboard bind address so it's reachable outside the container
+      DASHBOARD_HOST: "0.0.0.0"
+    ports:
+      - "8095:8095"
+    volumes:
+      # Persist SQLite database
+      - ./data:/app/data
+
+      # Project directories — gives agents access to your code
+      - /home:/home
+
+      # Agent auth & config (claude, opencode)
+      - ${HOME}/.claude:/root/.claude
+      - ${HOME}/.config:/root/.config
+
+      # TaskPilot skills
+      - ${HOME}/.taskpilot:/root/.taskpilot
