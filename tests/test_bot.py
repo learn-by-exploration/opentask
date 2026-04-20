@@ -218,7 +218,7 @@ class TestCmdStatus:
         update = _make_update()
         await cmd_status(update, _make_context())
         text = update.get_bot().send_message.call_args.kwargs["text"]
-        assert "elapsed" in text
+        assert "⏱" in text
         assert "Running" in text
 
 

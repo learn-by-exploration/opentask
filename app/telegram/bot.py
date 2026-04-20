@@ -134,20 +134,29 @@ def _is_allowed_project_dir(path: str) -> bool:
     return False
 
 
-async def _send(update: Update, text: str) -> None:
+async def _send(update: Update, text: str, parse_mode: str | None = ParseMode.MARKDOWN) -> None:
     """Send a message, splitting at MAX_MSG_LEN if needed."""
     chat_id = _chat_id(update)
     for i in range(0, len(text), MAX_MSG_LEN):
-        await update.get_bot().send_message(
-            chat_id=chat_id,
-            text=text[i : i + MAX_MSG_LEN],
-        )
+        try:
+            await update.get_bot().send_message(
+                chat_id=chat_id,
+                text=text[i : i + MAX_MSG_LEN],
+                parse_mode=parse_mode,
+            )
+        except Exception:
+            # Fallback to plain text if markdown fails (e.g. unmatched backticks)
+            await update.get_bot().send_message(
+                chat_id=chat_id,
+                text=text[i : i + MAX_MSG_LEN],
+            )
 
 
 def _format_task(task: Task) -> str:
     emoji = _status_emoji(task.status)
-    dur = f" ({task.duration_seconds}s)" if task.duration_seconds else ""
-    return f"{emoji} #{task.id} [{task.agent}] {task.prompt[:60]}{dur}"
+    dur = f"  `{task.duration_seconds}s`" if task.duration_seconds else ""
+    prompt_short = task.prompt[:60].replace('`', "'")
+    return f"{emoji} *#{task.id}*  `{task.agent}`  {prompt_short}{dur}"
 
 
 # ── Notification callback (called by runner) ────────────────────────
@@ -163,11 +172,20 @@ async def make_notify_callback(
             return
 
         emoji = _status_emoji(task.status)
-        text = f"{emoji} Task #{task.id} {task.status.value}\n"
+        dur = f"  ({task.duration_seconds}s)" if task.duration_seconds else ""
+        status_label = task.status.value.upper()
+        text = f"{emoji} *Task #{task.id} — {status_label}*{dur}\n"
+        text += f"`{task.agent}`"
+        if task.model:
+            text += f"  model: `{task.model}`"
+        text += "\n"
         if task.output_summary:
-            text += f"\n{task.output_summary}"
+            # Wrap summary in a clean block
+            summary = task.output_summary.replace('`', "'")
+            text += f"\n```\n{summary}\n```\n"
         if task.error_message:
-            text += f"\n⚠️ {task.error_message}"
+            err = task.error_message.replace('`', "'")
+            text += f"\n⚠️ `{err}`\n"
 
         # Post-completion action buttons
         buttons = []
@@ -185,11 +203,19 @@ async def make_notify_callback(
         for i in range(0, len(text), MAX_MSG_LEN):
             # Only attach keyboard to the last chunk
             reply_markup = keyboard if i + MAX_MSG_LEN >= len(text) else None
-            await app.bot.send_message(
-                chat_id=task.telegram_chat_id,
-                text=text[i : i + MAX_MSG_LEN],
-                reply_markup=reply_markup,
-            )
+            try:
+                await app.bot.send_message(
+                    chat_id=task.telegram_chat_id,
+                    text=text[i : i + MAX_MSG_LEN],
+                    reply_markup=reply_markup,
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            except Exception:
+                await app.bot.send_message(
+                    chat_id=task.telegram_chat_id,
+                    text=text[i : i + MAX_MSG_LEN],
+                    reply_markup=reply_markup,
+                )
         if task.telegram_msg_id:
             try:
                 await app.bot.edit_message_text(
@@ -332,8 +358,16 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             now = datetime.now(timezone.utc).replace(tzinfo=None)
             delta = int((now - task.started_at).total_seconds())
             mins, secs = divmod(delta, 60)
-            elapsed = f" — {mins}m{secs:02d}s elapsed" if mins else f" — {secs}s elapsed"
-        await _send(update, f"🔄 Running: {_format_task(task)}{elapsed}")
+            elapsed = f"  ⏱ `{mins}m{secs:02d}s`" if mins else f"  ⏱ `{secs}s`"
+        prompt_short = task.prompt[:80].replace('`', "'")
+        model_tag = f"  model: `{task.model}`" if task.model else ""
+        worker_tag = f"  → @{task.assigned_to}" if task.assigned_to else ""
+        await _send(
+            update,
+            f"🔄 *Running — Task #{task.id}*{elapsed}\n"
+            f"`{task.agent}`{model_tag}{worker_tag}\n"
+            f"_{prompt_short}_",
+        )
 
 
 @auth_required
@@ -343,7 +377,9 @@ async def cmd_queue(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not tasks:
         await _send(update, "📭 Queue is empty.")
     else:
-        lines = ["📦 *Pending tasks:*"] + [_format_task(t) for t in tasks]
+        lines = ["📦 *Pending tasks:*\n"]
+        for t in tasks:
+            lines.append(_format_task(t))
         await _send(update, "\n".join(lines))
 
 
@@ -359,7 +395,9 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not tasks:
         await _send(update, "📭 No tasks yet.")
     else:
-        lines = [f"📜 *Recent tasks (last {len(tasks)}):*"] + [_format_task(t) for t in tasks]
+        lines = [f"📜 *Recent tasks (last {len(tasks)}):*\n"]
+        for t in tasks:
+            lines.append(_format_task(t))
         await _send(update, "\n".join(lines))
 
 
@@ -482,10 +520,12 @@ async def cmd_output(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.get_bot().send_document(
             chat_id=_chat_id(update),
             document=buf,
-            caption=f"📄 Output for #{task_id} ({len(task.full_output)} chars)",
+            caption=f"📄 Full output for *#{task_id}* ({len(task.full_output)} chars)",
+            parse_mode=ParseMode.MARKDOWN,
         )
     else:
-        await _send(update, f"📄 Output for #{task_id}:\n\n{task.full_output}")
+        escaped = task.full_output.replace('`', "'")
+        await _send(update, f"📄 *Output for #{task_id}:*\n\n```\n{escaped}\n```")
 
 
 # ── Retry command ───────────────────────────────────────────────────
@@ -849,8 +889,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     project_display = task.project_dir.replace(os.path.expanduser('~'), '~')
-    model_display = f" model=`{task.model}`" if task.model else ""
-    worker_display = f" → @{task.assigned_to}" if task.assigned_to else ""
+    model_display = f"  model: `{task.model}`" if task.model else ""
+    worker_display = f"  → `{task.assigned_to}`" if task.assigned_to else ""
 
     # Check for recipe match
     recipe = await match_recipe(clean_prompt)
@@ -914,8 +954,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             rows.append(worker_buttons)
         keyboard = InlineKeyboardMarkup(rows)
         await update.message.reply_text(  # type: ignore[union-attr]
-            f"📋 Queued #{task.id} (`{task.agent}`){model_display}{worker_display} in `{project_display}`\n"
-            f"🧪 Recipe '{recipe.name}' matched — apply it?",
+            f"📋 *Queued #{task.id}*  `{task.agent}`{model_display}{worker_display}\n"
+            f"📂 `{project_display}`\n\n"
+            f"🧪 Recipe *{recipe.name}* matched — apply it?",
             reply_markup=keyboard,
             parse_mode=ParseMode.MARKDOWN,
         )
@@ -927,9 +968,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if worker_buttons:
             rows.append(worker_buttons)
         keyboard = InlineKeyboardMarkup(rows)
+        prompt_short = task.prompt[:80].replace('`', "'")
         await update.message.reply_text(  # type: ignore[union-attr]
-            f"📋 Queued #{task.id} (`{task.agent}`){model_display}{worker_display} in `{project_display}`\n"
-            f"_Switch agent/model/server before it starts:_",
+            f"📋 *Queued #{task.id}*  `{task.agent}`{model_display}{worker_display}\n"
+            f"📂 `{project_display}`\n\n"
+            f"_{prompt_short}_",
             reply_markup=keyboard,
             parse_mode=ParseMode.MARKDOWN,
         )
@@ -963,7 +1006,7 @@ async def handle_agent_callback(update: Update, context: ContextTypes.DEFAULT_TY
     if updated:
         project_display = updated.project_dir.replace(os.path.expanduser('~'), '~')
         await query.edit_message_text(  # type: ignore[union-attr]
-            f"📋 Switched #{updated.id} → `{updated.agent}` in `{project_display}`",
+            f"✅ *#{updated.id}* switched → `{updated.agent}`\n📂 `{project_display}`",
             parse_mode=ParseMode.MARKDOWN,
         )
     else:
@@ -1005,10 +1048,11 @@ async def handle_model_set_callback(update: Update, context: ContextTypes.DEFAUL
         InlineKeyboardButton("🔄 Default", callback_data=f"modelswitch:{task_id}:__default__")
     )
     project_display = task.project_dir.replace(os.path.expanduser('~'), '~')
-    model_display = f" model=`{task.model}`" if task.model else ""
+    model_display = f"  model: `{task.model}`" if task.model else ""
     await query.edit_message_text(  # type: ignore[union-attr]
-        f"📋 Task #{task_id} (`{task.agent}`){model_display} in `{project_display}`\n"
-        f"_Pick a model or reply with_ `/setmodel {task_id} <model_name>`:",
+        f"🧠 *Task #{task_id}*  `{task.agent}`{model_display}\n"
+        f"📂 `{project_display}`\n\n"
+        f"_Pick a model:_",
         reply_markup=InlineKeyboardMarkup([buttons]),
         parse_mode=ParseMode.MARKDOWN,
     )
@@ -1038,9 +1082,9 @@ async def handle_model_switch_callback(update: Update, context: ContextTypes.DEF
     updated = await switch_task_model(task_id, model_name)
     if updated:
         project_display = updated.project_dir.replace(os.path.expanduser('~'), '~')
-        model_text = f" model=`{updated.model}`" if updated.model else " (agent default)"
+        model_text = f"model: `{updated.model}`" if updated.model else "model: _agent default_"
         await query.edit_message_text(  # type: ignore[union-attr]
-            f"📋 #{updated.id} (`{updated.agent}`){model_text} in `{project_display}`",
+            f"✅ *#{updated.id}*  `{updated.agent}`  {model_text}\n📂 `{project_display}`",
             parse_mode=ParseMode.MARKDOWN,
         )
     else:
@@ -1073,9 +1117,9 @@ async def handle_worker_switch_callback(update: Update, context: ContextTypes.DE
     updated = await switch_task_worker(task_id, worker_name)
     if updated:
         project_display = updated.project_dir.replace(os.path.expanduser('~'), '~')
-        worker_text = f" → @{updated.assigned_to}" if updated.assigned_to else " (local)"
+        worker_text = f"→ `{updated.assigned_to}`" if updated.assigned_to else "→ _local_"
         await query.edit_message_text(  # type: ignore[union-attr]
-            f"📋 #{updated.id} (`{updated.agent}`){worker_text} in `{project_display}`",
+            f"✅ *#{updated.id}*  `{updated.agent}`  {worker_text}\n📂 `{project_display}`",
             parse_mode=ParseMode.MARKDOWN,
         )
     else:
@@ -1131,7 +1175,7 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 mins, secs = divmod(delta, 60)
                 elapsed = f" — {mins}m{secs:02d}s elapsed" if mins else f" — {secs}s elapsed"
             text = f"🔄 Running: {_format_task(task)}{elapsed}"
-        await query.edit_message_text(text)  # type: ignore[union-attr]
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)  # type: ignore[union-attr]
 
     elif action == "queue":
         tasks = await get_pending_tasks()
@@ -1140,7 +1184,7 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         else:
             lines = ["📦 *Pending tasks:*"] + [_format_task(t) for t in tasks]
             text = "\n".join(lines)
-        await query.edit_message_text(text)  # type: ignore[union-attr]
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)  # type: ignore[union-attr]
 
     elif action == "history":
         tasks = await get_recent_tasks(limit=10)
@@ -1149,7 +1193,7 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         else:
             lines = [f"📜 *Recent tasks (last {len(tasks)}):*"] + [_format_task(t) for t in tasks]
             text = "\n".join(lines)
-        await query.edit_message_text(text)  # type: ignore[union-attr]
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)  # type: ignore[union-attr]
 
     elif action == "help":
         text = (
@@ -1538,7 +1582,8 @@ async def handle_recipe_callback(update: Update, context: ContextTypes.DEFAULT_T
         except ValueError:
             return
         await query.edit_message_text(  # type: ignore[union-attr]
-            f"📋 Task #{task_id} queued without recipe."
+            f"📋 Task *#{task_id}* queued without recipe.",
+            parse_mode=ParseMode.MARKDOWN,
         )
 
     elif action == "recipeuse":
@@ -1570,7 +1615,8 @@ async def handle_recipe_callback(update: Update, context: ContextTypes.DEFAULT_T
         await _apply_recipe_to_task(task_id, recipe, enriched_prompt)
 
         await query.edit_message_text(  # type: ignore[union-attr]
-            f"🧪 Recipe '{recipe_name}' applied to task #{task_id}",
+            f"🧪 Recipe *{recipe_name}* applied to task *#{task_id}*",
+            parse_mode=ParseMode.MARKDOWN,
         )
 
 

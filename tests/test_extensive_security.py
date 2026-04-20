@@ -167,7 +167,7 @@ class TestHandleAgentCallback:
         update.callback_query.edit_message_text.assert_awaited_once()
         call_text = update.callback_query.edit_message_text.call_args[0][0]
         assert "claude" in call_text
-        assert "Switched" in call_text
+        assert "switched" in call_text.lower()
 
     @pytest.mark.asyncio
     async def test_callback_already_running(self, fresh_db):
