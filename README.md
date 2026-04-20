@@ -1,4 +1,4 @@
-# TaskPilot
+# OpenTask
 
 **Personal remote AI agent control via Telegram.**
 
@@ -8,10 +8,10 @@ Send a task from your phone → AI agent runs it on your dev machine → get res
 
 ## Why This Exists
 
-When you step away from your desk — lunch break, commute, overnight — your dev machine sits idle. TaskPilot lets you keep it working:
+When you step away from your desk — lunch break, commute, overnight — your dev machine sits idle. OpenTask lets you keep it working:
 
 1. You send a natural language task to a Telegram bot
-2. TaskPilot queues it and dispatches it to your AI coding agent (OpenCode, etc.)
+2. OpenTask queues it and dispatches it to your AI coding agent (OpenCode, Aider, etc.)
 3. When the agent finishes, you get a summary back on Telegram
 4. You read the result and send the next task — all from your phone
 
@@ -20,20 +20,37 @@ No SSH tunnels, no port forwarding, no VPN. Just Telegram long-polling.
 ## Architecture
 
 ```
-┌──────────────┐        ┌──────────────────────────────────────────┐
-│  Your Phone  │        │            Dev Machine                   │
-│  (Telegram)  │◄──────►│                                          │
-│              │        │  ┌────────┐  ┌────────┐  ┌───────────┐  │
-│  Send task   │        │  │Telegram│  │  Task  │  │  Agent    │  │
-│  Get results │        │  │  Bot   │──│ Broker │──│  Runner   │  │
-│  /status     │        │  └────────┘  └────────┘  └───────────┘  │
-│  /cancel     │        │                  │            │          │
-│  /queue      │        │              ┌───┴───┐   ┌────┴─────┐   │
-│              │        │              │SQLite │   │ OpenCode │   │
-└──────────────┘        │              │  DB   │   │ subprocess│  │
-                        │              └───────┘   └──────────┘   │
-                        └──────────────────────────────────────────┘
+┌──────────────┐        ┌──────────────────────────────────────────────┐
+│  Your Phone  │        │              Dev Machine                     │
+│  (Telegram)  │◄──────►│                                              │
+│              │        │  ┌────────┐  ┌────────┐  ┌───────────────┐  │
+│  Send task   │        │  │Telegram│  │  Task  │  │    Agent      │  │
+│  Get results │        │  │  Bot   │──│ Broker │──│    Runner     │  │
+│  /status     │        │  └────────┘  └────────┘  └───────────────┘  │
+│  /cancel     │        │       │          │              │            │
+│  /queue      │        │       │      ┌───┴───┐    ┌────┴─────┐     │
+│  /chain      │        │       │      │SQLite │    │ OpenCode │     │
+│              │        │       │      │  DB   │    │ subprocess│    │
+└──────────────┘        │       │      └───────┘    └──────────┘     │
+                        │  ┌────┴─────────┐                           │
+                        │  │ Web Dashboard │                           │
+                        │  │  (FastAPI)    │                           │
+                        │  └──────────────┘                           │
+                        └──────────────────────────────────────────────┘
 ```
+
+## Features
+
+- **Telegram bot** — queue tasks, monitor progress, get results on your phone
+- **Task chains** — define multi-step workflows that run sequentially
+- **Repeat tasks** — run a task N times or until a specified time
+- **Web dashboard** — real-time monitoring UI with auto-refresh (FastAPI)
+- **Persistent preferences** — project dir and agent choice saved per chat
+- **Crash recovery** — orphaned running tasks/chains recovered on restart
+- **Auto-purge** — old completed tasks cleaned up after 7 days
+- **Progress notifications** — periodic updates while tasks run
+- **Path allowlist** — restrict agent execution to approved directories
+- **871 tests** across 19 test files covering broker, runner, bot, chains, security, and dashboard
 
 ## Key Design Decisions
 
@@ -45,41 +62,52 @@ No SSH tunnels, no port forwarding, no VPN. Just Telegram long-polling.
 | Queue | SQLite | Zero-setup, survives restarts, single-user scale is fine |
 | Execution | Subprocess | Simple, isolated, timeout-able. One task at a time |
 | Auth | Telegram user ID allowlist | Simple, effective for personal use |
+| Dashboard | FastAPI (optional) | Lightweight, async, same process — install with `pip install .[web]` |
 
 ## Components
 
 | Component | File | Purpose |
 |-----------|------|---------|
 | Config | `app/config/settings.py` | Pydantic settings from `.env` |
-| Models | `app/core/models.py` | SQLAlchemy Task model with full lifecycle |
-| Broker | `app/core/broker.py` | Task queue CRUD: enqueue, pick, complete, cancel, recover |
+| Models | `app/core/models.py` | Task, TaskChain, ChatPrefs — SQLAlchemy ORM |
+| Broker | `app/core/broker.py` | Task queue CRUD: enqueue, pick, complete, cancel, recover, chains, prefs |
 | Runner | `app/core/runner.py` | Subprocess execution with timeout, output capture, summarization |
-| Bot | `app/telegram/bot.py` | Telegram commands and message handling |
-| Entrypoint | `app/__main__.py` | Starts bot + runner concurrently |
+| Bot | `app/telegram/bot.py` | Telegram commands, message handling, notifications |
+| Dashboard | `app/web/dashboard.py` | FastAPI web dashboard with JSON API + embedded HTML UI |
+| Entrypoint | `app/__main__.py` | Starts bot + runner + dashboard concurrently |
 
 ## Telegram Commands
 
 | Command | Action |
 |---------|--------|
 | *any text* | Queue as a new task |
-| `/status` | Show current running task |
+| `/status` | Show current running task with elapsed time |
 | `/queue` | List pending tasks |
-| `/history` | Recent completed/failed tasks |
-| `/cancel` | Cancel the running task |
-| `/output <id>` | Get full output of a task |
-| `/project <path>` | Change working directory |
-| `/agent <name>` | Switch agent (opencode, copilot, etc.) |
+| `/history [N]` | Recent completed/failed tasks (default 10) |
+| `/cancel [id]` | Cancel the running task, or a specific pending task by ID |
+| `/output <id>` | Get full output of a task (sent as file if large) |
+| `/retry <id>` | Re-queue a failed task |
+| `/project <path>` | Change working directory (validated against allowlist) |
+| `/agent <name>` | Switch agent (opencode, aider, etc.) |
+| `/repeat <N> <prompt>` | Run a task N times |
+| `/repeat until:HH:MM <prompt>` | Run a task repeatedly until a time |
+| `/savechain <name> s1 \| s2 \| s3` | Save a multi-step chain |
+| `/chain <name>` | Run a saved chain |
+| `/chains` | List all saved chains |
+| `/delchain <name>` | Delete a chain |
 | `/help` | Show all commands |
 
 ## Quick Start
 
 ```bash
 # 1. Clone
-git clone <repo-url> ~/ai/taskpilot
-cd ~/ai/taskpilot
+git clone git@github.com:learn-by-exploration/opentask.git
+cd opentask
 
 # 2. Install
 pip install -e .
+# Optional: pip install -e ".[web]" for the web dashboard
+# Optional: pip install -e ".[dev]" for test dependencies
 
 # 3. Configure
 cp .env.example .env
@@ -102,52 +130,82 @@ taskpilot
 2. It replies with your numeric user ID
 3. Add it to `ALLOWED_USER_IDS` in `.env`
 
-## Reference Implementations
+## Web Dashboard
 
-Three open-source tools are kept as git submodules in `vendor/` for reference:
+When installed with `pip install -e ".[web]"`, a web dashboard runs alongside the bot at `http://127.0.0.1:8095`:
 
-| Tool | Stars | Language | Agents | Role |
-|------|-------|----------|--------|------|
-| [cc-connect](https://github.com/nicholasxuu/cc-connect) | 5.5k | Go | 11 (inc. OpenCode) | Universal backbone reference |
-| [vibe-remote](https://github.com/mherod/vibe-remote) | 401 | Python | OpenCode + others | Quick-task web dashboard reference |
-| [cc-telegram-bridge](https://github.com/cloveric/cc-telegram-bridge) | 124 | Node/TS | Claude + Codex only | Deep Telegram UX reference |
+- **Stats overview** — queue depth, completed/failed counts, average duration
+- **Running task** — highlighted card with elapsed time
+- **Queue view** — pending tasks
+- **Recent tasks** — status, agent, prompt, duration
+- **Chains** — all saved chains with status
+- **Auto-refresh** — live updates every 5 seconds
+- **JSON API** — `/api/stats`, `/api/tasks`, `/api/queue`, `/api/chains`, `/api/health`
+- **Optional auth** — set `DASHBOARD_TOKEN` in `.env` for bearer token protection
+
+## Environment Variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | yes | — | From @BotFather |
+| `ALLOWED_USER_IDS` | yes | — | Comma-separated Telegram user IDs |
+| `DEFAULT_AGENT` | no | `opencode` | Agent to use by default |
+| `DEFAULT_PROJECT_DIR` | no | `~/ai` | Working directory for tasks |
+| `ALLOWED_PROJECT_DIRS` | no | `~/ai,~/repos,~/projects` | Directories the agent may run in |
+| `AGENT_COMMANDS` | no | *(built-in)* | JSON map of agent→command template |
+| `TASK_TIMEOUT_SECONDS` | no | `1800` | Max seconds per task (30 min) |
+| `MAX_QUEUE_SIZE` | no | `20` | Max pending+running tasks |
+| `PROGRESS_INTERVAL_SECONDS` | no | `30` | Seconds between progress notifications |
+| `DB_PATH` | no | `./data/taskpilot.db` | SQLite database path |
+| `DASHBOARD_ENABLED` | no | `true` | Enable/disable web dashboard |
+| `DASHBOARD_HOST` | no | `127.0.0.1` | Dashboard listen address |
+| `DASHBOARD_PORT` | no | `8095` | Dashboard listen port |
+| `DASHBOARD_TOKEN` | no | *(empty)* | Bearer token for dashboard auth |
 
 ## Project Structure
 
 ```
-taskpilot/
+opentask/
 ├── app/
 │   ├── __init__.py
-│   ├── __main__.py          # Entrypoint: bot + runner
+│   ├── __main__.py            # Entrypoint: bot + runner + dashboard
 │   ├── config/
-│   │   ├── __init__.py
-│   │   └── settings.py      # Pydantic settings
+│   │   └── settings.py        # Pydantic settings from .env
 │   ├── core/
-│   │   ├── __init__.py
-│   │   ├── models.py        # SQLAlchemy Task model
-│   │   ├── db.py            # Async DB engine
-│   │   ├── broker.py        # Task queue operations
-│   │   └── runner.py        # Agent subprocess runner
+│   │   ├── models.py          # Task, TaskChain, ChatPrefs (SQLAlchemy)
+│   │   ├── db.py              # Async engine + session factory (aiosqlite)
+│   │   ├── broker.py          # Queue CRUD, chains, prefs, recovery
+│   │   └── runner.py          # Agent subprocess execution
 │   ├── telegram/
-│   │   ├── __init__.py
-│   │   └── bot.py           # Telegram handlers
+│   │   └── bot.py             # Commands, auth, notifications
 │   └── web/
-│       └── __init__.py      # Future: optional web dashboard
-├── vendor/                   # Git submodules (reference only)
-│   ├── cc-connect/
-│   ├── vibe-remote/
-│   └── cc-telegram-bridge/
+│       └── dashboard.py       # FastAPI dashboard (HTML + JSON API)
+├── tests/                     # 871 tests across 19 files
+│   ├── conftest.py            # In-memory SQLite fixtures
+│   ├── test_broker.py         # Core broker operations
+│   ├── test_runner.py         # Command building + summarization
+│   ├── test_bot.py            # All Telegram handlers
+│   ├── test_chains.py         # Chain CRUD and execution
+│   ├── test_web_dashboard.py  # Dashboard API + auth + HTML
+│   ├── test_qa_security.py    # Security and edge cases
+│   └── ...                    # Additional coverage suites
 ├── docs/
-│   ├── design/
-│   │   └── spec.md          # V1 specification
-│   └── architecture/
-│       └── overview.md       # Architecture deep-dive
-├── tests/
-│   └── conftest.py
+│   ├── architecture/
+│   │   └── overview.md        # Architecture deep-dive
+│   └── design/
+│       ├── spec.md            # V1 specification
+│       └── kickoff-discovery-coverage.md
 ├── .env.example
-├── .gitignore
 ├── pyproject.toml
+├── CLAUDE.md
 └── README.md
+```
+
+## Running Tests
+
+```bash
+pip install -e ".[dev]"
+pytest tests/ -v
 ```
 
 ## License
