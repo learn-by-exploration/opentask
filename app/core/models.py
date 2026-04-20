@@ -91,6 +91,11 @@ class Task(Base):
     )
     chain_step: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
+    # ── Worker routing (multi-machine) ───────────────────────────────
+    assigned_to: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    worker_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    heartbeat_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
     # ── Repeat support ──────────────────────────────────────────────
     repeat_total: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     repeat_remaining: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

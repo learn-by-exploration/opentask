@@ -256,6 +256,7 @@ class TestMainDashboardImportError:
         monkeypatch.setattr(main_mod, "recover_interrupted_tasks", AsyncMock(return_value=0))
         monkeypatch.setattr(main_mod, "recover_interrupted_chains", AsyncMock(return_value=0))
         monkeypatch.setattr(broker_mod, "purge_old_tasks", AsyncMock(return_value=0))
+        monkeypatch.setattr(broker_mod, "recover_stale_worker_tasks", AsyncMock(return_value=0))
         monkeypatch.setattr(broker_mod, "_runner_wake", None)
 
         mock_updater = AsyncMock()
@@ -319,6 +320,7 @@ class TestMainWebTaskShutdown:
         monkeypatch.setattr(main_mod, "recover_interrupted_tasks", AsyncMock(return_value=0))
         monkeypatch.setattr(main_mod, "recover_interrupted_chains", AsyncMock(return_value=0))
         monkeypatch.setattr(broker_mod, "purge_old_tasks", AsyncMock(return_value=0))
+        monkeypatch.setattr(broker_mod, "recover_stale_worker_tasks", AsyncMock(return_value=0))
         monkeypatch.setattr(broker_mod, "_runner_wake", None)
 
         mock_updater = AsyncMock()

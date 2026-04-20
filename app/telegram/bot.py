@@ -819,14 +819,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     current_agent = _agent(chat_id)
     current_model = _model(chat_id)
 
+    # Parse @worker_name hint from the prompt (e.g. "@server2 fix the bug")
+    assigned_to = None
+    clean_prompt = prompt
+    if prompt.startswith("@"):
+        parts = prompt.split(None, 1)
+        if len(parts) >= 2:
+            assigned_to = parts[0][1:]  # strip the @ prefix
+            clean_prompt = parts[1]
+        # if only "@server2" with no task text, treat whole thing as prompt
+
     try:
         task = await enqueue_task(
-            prompt=prompt,
+            prompt=clean_prompt,
             project_dir=_project_dir(chat_id),
             agent=current_agent,
             chat_id=chat_id,
             msg_id=update.message.message_id,  # type: ignore[union-attr]
             model=current_model or None,
+            assigned_to=assigned_to,
         )
     except ValueError:
         await _send(update, "⚠️ Queue is full. Wait for tasks to complete.")
@@ -838,9 +849,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     project_display = task.project_dir.replace(os.path.expanduser('~'), '~')
     model_display = f" model=`{task.model}`" if task.model else ""
+    worker_display = f" → @{task.assigned_to}" if task.assigned_to else ""
 
     # Check for recipe match
-    recipe = await match_recipe(prompt)
+    recipe = await match_recipe(clean_prompt)
 
     # Build switch buttons for other agents
     other_agents = [a for a in settings.agent_commands if a != current_agent]
@@ -874,7 +886,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         rows.append(model_buttons)
         keyboard = InlineKeyboardMarkup(rows)
         await update.message.reply_text(  # type: ignore[union-attr]
-            f"📋 Queued #{task.id} (`{task.agent}`){model_display} in `{project_display}`\n"
+            f"📋 Queued #{task.id} (`{task.agent}`){model_display}{worker_display} in `{project_display}`\n"
             f"🧪 Recipe '{recipe.name}' matched — apply it?",
             reply_markup=keyboard,
             parse_mode=ParseMode.MARKDOWN,
@@ -886,7 +898,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         rows.append(model_buttons)
         keyboard = InlineKeyboardMarkup(rows)
         await update.message.reply_text(  # type: ignore[union-attr]
-            f"📋 Queued #{task.id} (`{task.agent}`){model_display} in `{project_display}`\n"
+            f"📋 Queued #{task.id} (`{task.agent}`){model_display}{worker_display} in `{project_display}`\n"
             f"_Switch agent/model before it starts:_",
             reply_markup=keyboard,
             parse_mode=ParseMode.MARKDOWN,

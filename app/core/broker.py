@@ -22,6 +22,7 @@ _TASK_SUMMARY_COLUMNS = (
     Task.telegram_chat_id, Task.telegram_msg_id,
     Task.chain_id, Task.chain_step,
     Task.repeat_total, Task.repeat_remaining, Task.repeat_until,
+    Task.assigned_to, Task.worker_id, Task.heartbeat_at,
     Task.created_at, Task.started_at, Task.completed_at, Task.duration_seconds,
 )
 
@@ -41,8 +42,12 @@ async def enqueue_task(
     chat_id: int | None = None,
     msg_id: int | None = None,
     model: str | None = None,
+    assigned_to: str | None = None,
 ) -> Task:
-    """Add a new task to the queue. Raises ValueError if the queue is full."""
+    """Add a new task to the queue. Raises ValueError if the queue is full.
+
+    If *assigned_to* is set, only a remote worker with that id can claim it.
+    """
     session = await get_session()
     async with session, session.begin():
         count_result = await session.execute(
@@ -61,6 +66,7 @@ async def enqueue_task(
             project_dir=project_dir or settings.default_project_dir,
             agent=agent or settings.default_agent,
             model=model or settings.default_model or None,
+            assigned_to=assigned_to,
             status=TaskStatus.PENDING,
             telegram_chat_id=chat_id,
             telegram_msg_id=msg_id,
@@ -155,12 +161,19 @@ async def enqueue_followup(
 
 
 async def pick_next_task() -> Task | None:
-    """Pick the oldest PENDING task and mark it RUNNING."""
+    """Pick the oldest PENDING task and mark it RUNNING.
+
+    Skips tasks that are assigned to a specific remote worker (assigned_to
+    is set) — those are claimed via the Worker API instead.
+    """
     session = await get_session()
     async with session, session.begin():
         result = await session.execute(
             select(Task)
-            .where(Task.status == TaskStatus.PENDING)
+            .where(
+                Task.status == TaskStatus.PENDING,
+                Task.assigned_to.is_(None),  # skip remote-assigned tasks
+            )
             .order_by(Task.created_at.asc())
             .limit(1)
         )
@@ -171,6 +184,181 @@ async def pick_next_task() -> Task | None:
         task.status = TaskStatus.RUNNING
         task.started_at = _utcnow()
         return task
+
+
+# ── Worker API (multi-machine) ──────────────────────────────────
+
+WORKER_HEARTBEAT_TIMEOUT = 120  # seconds before a worker is considered dead
+
+
+async def worker_claim_task(worker_id: str) -> Task | None:
+    """Atomically claim the next PENDING task for a remote worker.
+
+    A worker can claim:
+    - Tasks explicitly assigned to it (assigned_to == worker_id)
+    - Tasks with no assignment (assigned_to IS NULL) that aren't grabbed by local runner
+
+    Tasks assigned to a *different* worker are never claimed.
+    Returns the task with status set to RUNNING, or None.
+    """
+    if not worker_id or len(worker_id) > 128:
+        raise ValueError("worker_id must be 1-128 characters")
+
+    session = await get_session()
+    async with session, session.begin():
+        # Prefer tasks explicitly assigned to this worker, then unassigned
+        result = await session.execute(
+            select(Task)
+            .where(
+                Task.status == TaskStatus.PENDING,
+                (Task.assigned_to == worker_id) | (Task.assigned_to.is_(None)),
+            )
+            .order_by(
+                # Prioritize tasks assigned to this worker
+                (Task.assigned_to == worker_id).desc(),
+                Task.created_at.asc(),
+            )
+            .limit(1)
+        )
+        task = result.scalar_one_or_none()
+        if task is None:
+            return None
+
+        task.status = TaskStatus.RUNNING
+        task.started_at = _utcnow()
+        task.worker_id = worker_id
+        task.heartbeat_at = _utcnow()
+        return task
+
+
+async def worker_submit_result(
+    task_id: int,
+    worker_id: str,
+    exit_code: int,
+    output_summary: str,
+    full_output: str,
+    error_message: str | None = None,
+) -> Task | None:
+    """Submit the result of a task executed by a remote worker.
+
+    Only accepts results from the worker that claimed the task.
+    Returns the updated task, or None if not found / not owned.
+    """
+    now = _utcnow()
+    new_status = TaskStatus.COMPLETED if exit_code == 0 else TaskStatus.FAILED
+
+    session = await get_session()
+    async with session, session.begin():
+        result = await session.execute(
+            update(Task)
+            .where(
+                Task.id == task_id,
+                Task.status == TaskStatus.RUNNING,
+                Task.worker_id == worker_id,
+            )
+            .values(
+                status=new_status,
+                exit_code=exit_code,
+                output_summary=output_summary,
+                full_output=full_output,
+                error_message=error_message,
+                completed_at=now,
+            )
+        )
+        if result.rowcount == 0:
+            return None
+
+        fetch = await session.execute(select(Task).where(Task.id == task_id))
+        task = fetch.scalar_one_or_none()
+        if task and task.started_at:
+            task.duration_seconds = int((now - task.started_at).total_seconds())
+        return task
+
+
+async def worker_heartbeat(task_id: int, worker_id: str) -> bool:
+    """Update the heartbeat timestamp for a running task owned by a worker.
+
+    Returns True if updated, False if task not found or not owned.
+    """
+    session = await get_session()
+    async with session, session.begin():
+        result = await session.execute(
+            update(Task)
+            .where(
+                Task.id == task_id,
+                Task.status == TaskStatus.RUNNING,
+                Task.worker_id == worker_id,
+            )
+            .values(heartbeat_at=_utcnow())
+        )
+        return result.rowcount > 0
+
+
+async def recover_stale_worker_tasks() -> int:
+    """Recover tasks from workers that stopped sending heartbeats.
+
+    Tasks running on a worker whose heartbeat is older than
+    WORKER_HEARTBEAT_TIMEOUT seconds are reset to PENDING so they
+    can be re-claimed.
+    """
+    from datetime import timedelta
+
+    cutoff = _utcnow() - timedelta(seconds=WORKER_HEARTBEAT_TIMEOUT)
+    session = await get_session()
+    async with session, session.begin():
+        result = await session.execute(
+            update(Task)
+            .where(
+                Task.status == TaskStatus.RUNNING,
+                Task.worker_id.isnot(None),
+                Task.heartbeat_at < cutoff,
+            )
+            .values(
+                status=TaskStatus.PENDING,
+                started_at=None,
+                worker_id=None,
+                heartbeat_at=None,
+            )
+        )
+        count = result.rowcount
+        if count:
+            logger.warning("Recovered %d stale worker task(s)", count)
+        return count
+
+
+async def list_active_workers() -> list[dict]:
+    """Return info about workers with currently running tasks."""
+    session = await get_session()
+    async with session:
+        result = await session.execute(
+            select(Task)
+            .where(
+                Task.status == TaskStatus.RUNNING,
+                Task.worker_id.isnot(None),
+            )
+        )
+        tasks = result.scalars().all()
+        workers: dict[str, dict] = {}
+        for t in tasks:
+            wid = t.worker_id
+            if wid not in workers:
+                workers[wid] = {
+                    "worker_id": wid,
+                    "tasks": [],
+                    "last_heartbeat": None,
+                }
+            workers[wid]["tasks"].append(t.id)
+            hb = t.heartbeat_at
+            if hb and (workers[wid]["last_heartbeat"] is None or hb > workers[wid]["last_heartbeat"]):
+                workers[wid]["last_heartbeat"] = hb
+
+        return [
+            {
+                **w,
+                "last_heartbeat": w["last_heartbeat"].isoformat() if w["last_heartbeat"] else None,
+            }
+            for w in workers.values()
+        ]
 
 
 async def complete_task(

@@ -18,7 +18,12 @@ from app.core.broker import (
     get_recent_tasks,
     get_running_task,
     get_task_by_id,
+    list_active_workers,
     list_chains,
+    recover_stale_worker_tasks,
+    worker_claim_task,
+    worker_heartbeat,
+    worker_submit_result,
 )
 from app.core.models import ChainStatus, TaskStatus
 
@@ -48,6 +53,8 @@ def _task_to_dict(task: Any) -> dict:
         "chain_step": task.chain_step,
         "repeat_total": task.repeat_total,
         "repeat_remaining": task.repeat_remaining,
+        "assigned_to": getattr(task, "assigned_to", None),
+        "worker_id": getattr(task, "worker_id", None),
     }
 
 
@@ -212,6 +219,135 @@ def create_dashboard_app() -> FastAPI:
         d = _chain_to_dict(chain)
         d["steps"] = chain.steps
         return d
+
+    # ── Worker API (multi-machine) ──────────────────────────────────
+
+    @app.post("/api/worker/claim")
+    async def api_worker_claim(request: Request) -> JSONResponse:
+        """Atomically claim the next available task for a remote worker.
+
+        Body: {"worker_id": "server2"}
+        Returns 200 + task dict, or 204 if nothing to claim.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(status_code=400, content={"detail": "Invalid JSON"})
+
+        worker_id = body.get("worker_id", "").strip()
+        if not worker_id or len(worker_id) > 128:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "worker_id is required (1-128 chars)"},
+            )
+
+        # Recover stale tasks before claiming
+        await recover_stale_worker_tasks()
+
+        try:
+            task = await worker_claim_task(worker_id)
+        except ValueError as e:
+            return JSONResponse(status_code=400, content={"detail": str(e)})
+        except Exception:
+            _log.exception("Worker claim error")
+            return JSONResponse(status_code=500, content={"detail": "Internal error"})
+
+        if task is None:
+            return JSONResponse(status_code=204, content=None)
+
+        d = _task_to_dict(task)
+        d["full_output"] = None  # not relevant for claim
+        d["prompt"] = task.prompt  # full prompt for execution
+        return JSONResponse(status_code=200, content=d)
+
+    @app.post("/api/worker/{task_id}/result")
+    async def api_worker_result(task_id: int, request: Request) -> JSONResponse:
+        """Submit the result of a task executed by a remote worker.
+
+        Body: {"worker_id": "server2", "exit_code": 0,
+               "output_summary": "...", "full_output": "...",
+               "error_message": null}
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(status_code=400, content={"detail": "Invalid JSON"})
+
+        worker_id = body.get("worker_id", "").strip()
+        if not worker_id:
+            return JSONResponse(status_code=400, content={"detail": "worker_id required"})
+
+        exit_code = body.get("exit_code")
+        if exit_code is None or not isinstance(exit_code, int):
+            return JSONResponse(status_code=400, content={"detail": "exit_code (int) required"})
+
+        output_summary = str(body.get("output_summary", ""))[:500]
+        full_output = str(body.get("full_output", ""))[:2_000_000]
+        error_message = body.get("error_message")
+        if error_message is not None:
+            error_message = str(error_message)[:2000]
+
+        try:
+            task = await worker_submit_result(
+                task_id=task_id,
+                worker_id=worker_id,
+                exit_code=exit_code,
+                output_summary=output_summary,
+                full_output=full_output,
+                error_message=error_message,
+            )
+        except Exception:
+            _log.exception("Worker result error")
+            return JSONResponse(status_code=500, content={"detail": "Internal error"})
+
+        if task is None:
+            return JSONResponse(
+                status_code=404,
+                content={"detail": "Task not found, not running, or not owned by this worker"},
+            )
+
+        return JSONResponse(status_code=200, content=_task_to_dict(task))
+
+    @app.post("/api/worker/{task_id}/heartbeat")
+    async def api_worker_heartbeat(task_id: int, request: Request) -> JSONResponse:
+        """Keep-alive signal from a remote worker executing a task.
+
+        Body: {"worker_id": "server2"}
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(status_code=400, content={"detail": "Invalid JSON"})
+
+        worker_id = body.get("worker_id", "").strip()
+        if not worker_id:
+            return JSONResponse(status_code=400, content={"detail": "worker_id required"})
+
+        try:
+            ok = await worker_heartbeat(task_id, worker_id)
+        except Exception:
+            _log.exception("Worker heartbeat error")
+            return JSONResponse(status_code=500, content={"detail": "Internal error"})
+
+        if not ok:
+            return JSONResponse(
+                status_code=404,
+                content={"detail": "Task not found or not owned by this worker"},
+            )
+
+        return JSONResponse(status_code=200, content={"ok": True})
+
+    @app.get("/api/workers")
+    async def api_workers() -> list[dict]:
+        """List active workers with their running tasks."""
+        try:
+            return await list_active_workers()
+        except Exception:
+            _log.exception("Workers list error")
+            return JSONResponse(  # type: ignore[return-value]
+                status_code=500,
+                content={"detail": "Internal error"},
+            )
 
     # ── HTML dashboard ──────────────────────────────────────────────
 

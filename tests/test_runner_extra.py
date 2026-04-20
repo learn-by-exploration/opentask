@@ -631,6 +631,7 @@ class TestMainRunIntegration:
         # Stub broker functions used inside _run
         import app.core.broker as broker_mod
         monkeypatch.setattr(broker_mod, "purge_old_tasks", AsyncMock(return_value=0))
+        monkeypatch.setattr(broker_mod, "recover_stale_worker_tasks", AsyncMock(return_value=0))
         monkeypatch.setattr(broker_mod, "_runner_wake", None)
 
         # Stub build_app to return a mock Application

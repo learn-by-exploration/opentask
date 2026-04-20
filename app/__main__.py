@@ -30,7 +30,10 @@ async def _run() -> None:
     if recovered_chains:
         logger.info("Recovered %d interrupted chains", recovered_chains)
 
-    from app.core.broker import purge_old_tasks
+    from app.core.broker import purge_old_tasks, recover_stale_worker_tasks
+    recovered_workers = await recover_stale_worker_tasks()
+    if recovered_workers:
+        logger.info("Recovered %d stale worker tasks", recovered_workers)
     purged = await purge_old_tasks(days=7)
     if purged:
         logger.info("Purged %d old tasks", purged)
