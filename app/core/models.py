@@ -110,3 +110,46 @@ class ChatPrefs(Base):
     project_dir: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     agent: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
+class Recipe(Base):
+    """A named recipe for smart prompt routing with triggers, setup, and skills."""
+    __tablename__ = "recipes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    # JSON list of trigger keywords: ["rosbag", "ros2", "analysis"]
+    triggers_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    # Optional overrides
+    agent: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    project_dir: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    # JSON list of setup commands to prepend: ["source /opt/ros/humble/setup.bash"]
+    setup_commands_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    # JSON list of skill names whose SKILL.md to inject: ["ros2-skill"]
+    skills_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    # Text to prepend/append to the user prompt
+    prompt_prefix: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    prompt_suffix: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    telegram_chat_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    @property
+    def triggers(self) -> list[str]:
+        try:
+            return json.loads(self.triggers_json)
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    @property
+    def setup_commands(self) -> list[str]:
+        try:
+            return json.loads(self.setup_commands_json)
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    @property
+    def skills(self) -> list[str]:
+        try:
+            return json.loads(self.skills_json)
+        except (json.JSONDecodeError, TypeError):
+            return []

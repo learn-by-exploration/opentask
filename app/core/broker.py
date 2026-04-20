@@ -12,7 +12,7 @@ from sqlalchemy.orm import load_only
 
 from app.config.settings import settings
 from app.core.db import get_session
-from app.core.models import ChatPrefs, ChainStatus, Task, TaskChain, TaskStatus, _utcnow
+from app.core.models import ChatPrefs, ChainStatus, Recipe, Task, TaskChain, TaskStatus, _utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -681,3 +681,152 @@ async def set_chat_pref(chat_id: int, *, project_dir: str | None = None, agent: 
         if agent is not None:
             prefs.agent = agent
         prefs.updated_at = _utcnow()
+
+
+# ── Recipe CRUD ──────────────────────────────────────────────────────
+
+
+async def save_recipe(
+    name: str,
+    triggers: list[str],
+    agent: str | None = None,
+    project_dir: str | None = None,
+    setup_commands: list[str] | None = None,
+    skills: list[str] | None = None,
+    prompt_prefix: str | None = None,
+    prompt_suffix: str | None = None,
+    chat_id: int | None = None,
+) -> Recipe:
+    """Save or update a recipe.  Raises ValueError on invalid input."""
+    if not name or len(name) > 128:
+        raise ValueError("Recipe name must be 1-128 characters")
+    if not triggers:
+        raise ValueError("Recipe must have at least one trigger keyword")
+    if len(triggers) > 50:
+        raise ValueError("Recipe cannot have more than 50 triggers")
+    for t in triggers:
+        if not t or len(t) > 200:
+            raise ValueError("Each trigger must be 1-200 characters")
+    if setup_commands and len(setup_commands) > 20:
+        raise ValueError("Recipe cannot have more than 20 setup commands")
+    if skills and len(skills) > 20:
+        raise ValueError("Recipe cannot have more than 20 skills")
+    if prompt_prefix and len(prompt_prefix) > 2000:
+        raise ValueError("prompt_prefix exceeds 2000 chars")
+    if prompt_suffix and len(prompt_suffix) > 2000:
+        raise ValueError("prompt_suffix exceeds 2000 chars")
+
+    session = await get_session()
+    async with session, session.begin():
+        # Upsert: delete old recipe with same name
+        existing = await session.execute(
+            select(Recipe).where(Recipe.name == name)
+        )
+        old = existing.scalar_one_or_none()
+        if old is not None:
+            await session.delete(old)
+            await session.flush()
+
+        recipe = Recipe(
+            name=name,
+            triggers_json=json.dumps(triggers),
+            agent=agent,
+            project_dir=project_dir,
+            setup_commands_json=json.dumps(setup_commands or []),
+            skills_json=json.dumps(skills or []),
+            prompt_prefix=prompt_prefix,
+            prompt_suffix=prompt_suffix,
+            telegram_chat_id=chat_id,
+        )
+        session.add(recipe)
+        await session.flush()
+        await session.refresh(recipe)
+        return recipe
+
+
+async def list_recipes() -> list[Recipe]:
+    """Return all recipes ordered by creation time."""
+    session = await get_session()
+    async with session:
+        result = await session.execute(
+            select(Recipe).order_by(Recipe.created_at.desc())
+        )
+        return list(result.scalars().all())
+
+
+async def get_recipe_by_name(name: str) -> Recipe | None:
+    session = await get_session()
+    async with session:
+        result = await session.execute(
+            select(Recipe).where(Recipe.name == name)
+        )
+        return result.scalar_one_or_none()
+
+
+async def get_recipe_by_id(recipe_id: int) -> Recipe | None:
+    session = await get_session()
+    async with session:
+        result = await session.execute(
+            select(Recipe).where(Recipe.id == recipe_id)
+        )
+        return result.scalar_one_or_none()
+
+
+async def delete_recipe(name: str) -> bool:
+    """Delete a recipe by name. Returns True if deleted."""
+    session = await get_session()
+    async with session, session.begin():
+        result = await session.execute(
+            select(Recipe).where(Recipe.name == name)
+        )
+        recipe = result.scalar_one_or_none()
+        if recipe is None:
+            return False
+        await session.delete(recipe)
+        return True
+
+
+async def match_recipe(prompt: str) -> Recipe | None:
+    """Find the first recipe whose triggers match the prompt (case-insensitive).
+
+    Returns the recipe with the most trigger matches, or None.
+    """
+    recipes = await list_recipes()
+    if not recipes:
+        return None
+
+    prompt_lower = prompt.lower()
+    best_recipe = None
+    best_score = 0
+
+    for recipe in recipes:
+        score = sum(1 for t in recipe.triggers if t.lower() in prompt_lower)
+        if score > best_score:
+            best_score = score
+            best_recipe = recipe
+
+    return best_recipe if best_score > 0 else None
+
+
+async def _apply_recipe_to_task(
+    task_id: int,
+    recipe: Recipe,
+    enriched_prompt: str,
+) -> Task | None:
+    """Apply recipe overrides (agent, project_dir, enriched prompt) to a PENDING task."""
+    session = await get_session()
+    async with session, session.begin():
+        result = await session.execute(
+            select(Task).where(Task.id == task_id, Task.status == TaskStatus.PENDING)
+        )
+        task = result.scalar_one_or_none()
+        if task is None:
+            return None
+        task.prompt = enriched_prompt
+        if recipe.agent:
+            task.agent = recipe.agent
+        if recipe.project_dir:
+            task.project_dir = recipe.project_dir
+        await session.flush()
+        await session.refresh(task)
+        return task

@@ -641,7 +641,7 @@ class TestMainRunIntegration:
         mock_app.stop = AsyncMock()
         mock_app.shutdown = AsyncMock()
         mock_app.updater = mock_updater
-        mock_app.bot = MagicMock()
+        mock_app.bot = AsyncMock()
 
         monkeypatch.setattr(main_mod, "build_app", lambda runner: mock_app)
         monkeypatch.setattr(main_mod, "make_notify_callback", AsyncMock(return_value=AsyncMock()))

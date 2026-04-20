@@ -22,21 +22,27 @@ from telegram.ext import (
 
 from app.config.settings import settings
 from app.core.broker import (
+    _apply_recipe_to_task,
     advance_chain,
     cancel_running_task,
     cancel_task_by_id,
     delete_chain,
+    delete_recipe,
     enqueue_repeat_task,
     enqueue_task,
     get_chain_by_name,
     get_chat_prefs,
     get_pending_tasks,
     get_recent_tasks,
+    get_recipe_by_name,
     get_running_task,
     get_task_by_id,
     list_chains,
+    list_recipes,
+    match_recipe,
     retry_task,
     save_chain,
+    save_recipe,
     set_chat_pref,
     start_chain,
     switch_task_agent,
@@ -151,10 +157,20 @@ async def make_notify_callback(
         if task.error_message:
             text += f"\n⚠️ {task.error_message}"
 
+        # Post-completion action buttons
+        buttons = []
+        if task.status in (TaskStatus.FAILED, TaskStatus.CANCELLED):
+            buttons.append(InlineKeyboardButton("🔄 Retry", callback_data=f"taskretry:{task.id}"))
+        buttons.append(InlineKeyboardButton("📤 Full Output", callback_data=f"taskoutput:{task.id}"))
+        keyboard = InlineKeyboardMarkup([buttons])
+
         for i in range(0, len(text), MAX_MSG_LEN):
+            # Only attach keyboard to the last chunk
+            reply_markup = keyboard if i + MAX_MSG_LEN >= len(text) else None
             await app.bot.send_message(
                 chat_id=task.telegram_chat_id,
                 text=text[i : i + MAX_MSG_LEN],
+                reply_markup=reply_markup,
             )
         if task.telegram_msg_id:
             try:
@@ -221,7 +237,33 @@ async def make_typing_callback(
 
 @auth_required
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _send(update, "👋 TaskPilot ready. Send any text to create a task.")
+    await _load_prefs(_chat_id(update))
+    chat_id = _chat_id(update)
+    agent = _agent(chat_id)
+    project = _project_dir(chat_id).replace(os.path.expanduser('~'), '~')
+    text = (
+        f"👋 *TaskPilot ready*\n\n"
+        f"🤖 Agent: `{agent}`\n"
+        f"📁 Project: `{project}`\n\n"
+        "Send any text to create a task, or tap a button:"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📊 Status", callback_data="menu:status"),
+            InlineKeyboardButton("📦 Queue", callback_data="menu:queue"),
+            InlineKeyboardButton("📜 History", callback_data="menu:history"),
+        ],
+        [
+            InlineKeyboardButton("⚙️ Settings", callback_data="menu:settings"),
+            InlineKeyboardButton("❓ Help", callback_data="menu:help"),
+        ],
+    ])
+    await update.get_bot().send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=keyboard,
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
 
 @auth_required
@@ -244,6 +286,11 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/chain <name> — run a saved chain\n"
         "/chains — list all chains\n"
         "/delchain <name> — delete a chain\n\n"
+        "*Recipes:*\n"
+        "/addrecipe <name> triggers:kw1,kw2 [agent:name]\n"
+        "/recipes — list recipes\n"
+        "/recipe <name> — show recipe details\n"
+        "/delrecipe <name> — delete a recipe\n\n"
         "/help — this message\n\n"
         "Or just send any text to queue a task."
     )
@@ -664,14 +711,39 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     project_display = task.project_dir.replace(os.path.expanduser('~'), '~')
 
+    # Check for recipe match
+    recipe = await match_recipe(prompt)
+
     # Build switch buttons for other agents
     other_agents = [a for a in settings.agent_commands if a != current_agent]
+    buttons_row = []
     if other_agents:
-        buttons = [
+        buttons_row = [
             InlineKeyboardButton(f"↻ {name}", callback_data=f"switch:{task.id}:{name}")
             for name in other_agents
         ]
-        keyboard = InlineKeyboardMarkup([buttons])
+
+    if recipe:
+        # Offer to apply recipe
+        recipe_buttons = [
+            InlineKeyboardButton(
+                f"🧪 Use '{recipe.name}'",
+                callback_data=f"recipeuse:{task.id}:{recipe.name}",
+            ),
+            InlineKeyboardButton("⏭ Skip", callback_data=f"recipeskip:{task.id}"),
+        ]
+        rows = [recipe_buttons]
+        if buttons_row:
+            rows.append(buttons_row)
+        keyboard = InlineKeyboardMarkup(rows)
+        await update.message.reply_text(  # type: ignore[union-attr]
+            f"📋 Queued #{task.id} (`{task.agent}`) in `{project_display}`\n"
+            f"🧪 Recipe '{recipe.name}' matched — apply it?",
+            reply_markup=keyboard,
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    elif buttons_row:
+        keyboard = InlineKeyboardMarkup([buttons_row])
         await update.message.reply_text(  # type: ignore[union-attr]
             f"📋 Queued #{task.id} (`{task.agent}`) in `{project_display}`\n"
             f"_Switch agent before it starts:_",
@@ -722,6 +794,469 @@ async def handle_agent_callback(update: Update, context: ContextTypes.DEFAULT_TY
         )
 
 
+@auth_required
+async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /start menu button presses."""
+    query = update.callback_query
+    await query.answer()  # type: ignore[union-attr]
+
+    data = query.data or ""  # type: ignore[union-attr]
+    action = data.split(":", 1)[1] if ":" in data else ""
+
+    chat_id = query.message.chat_id  # type: ignore[union-attr]
+    await _load_prefs(chat_id)
+
+    if action == "status":
+        task = await get_running_task()
+        if task is None:
+            text = "💤 No task running."
+        else:
+            elapsed = ""
+            if task.started_at:
+                now = datetime.now(timezone.utc).replace(tzinfo=None)
+                delta = int((now - task.started_at).total_seconds())
+                mins, secs = divmod(delta, 60)
+                elapsed = f" — {mins}m{secs:02d}s elapsed" if mins else f" — {secs}s elapsed"
+            text = f"🔄 Running: {_format_task(task)}{elapsed}"
+        await query.edit_message_text(text)  # type: ignore[union-attr]
+
+    elif action == "queue":
+        tasks = await get_pending_tasks()
+        if not tasks:
+            text = "📭 Queue is empty."
+        else:
+            lines = ["📦 *Pending tasks:*"] + [_format_task(t) for t in tasks]
+            text = "\n".join(lines)
+        await query.edit_message_text(text)  # type: ignore[union-attr]
+
+    elif action == "history":
+        tasks = await get_recent_tasks(limit=10)
+        if not tasks:
+            text = "📭 No tasks yet."
+        else:
+            lines = [f"📜 *Recent tasks (last {len(tasks)}):*"] + [_format_task(t) for t in tasks]
+            text = "\n".join(lines)
+        await query.edit_message_text(text)  # type: ignore[union-attr]
+
+    elif action == "help":
+        text = (
+            "📖 *TaskPilot Commands*\n\n"
+            "/status — current task status\n"
+            "/queue — pending tasks\n"
+            "/history [N] — recent tasks\n"
+            "/cancel [id] — cancel running or pending task\n"
+            "/retry <id> — re-queue a failed task\n"
+            "/project <path> — set project dir\n"
+            "/agent <name> — set agent\n"
+            "/output <id> — get full output of a task\n\n"
+            "*Repeat:*\n"
+            "/repeat <N> <prompt> — repeat N times\n"
+            "/repeat until:HH:MM <prompt> — repeat until time\n\n"
+            "*Chains:*\n"
+            "/savechain <name> step1 | step2 | step3\n"
+            "/chain <name> — run a saved chain\n"
+            "/chains — list all chains\n"
+            "/delchain <name> — delete a chain\n\n"
+            "*Recipes:*\n"
+            "/addrecipe <name> triggers:kw1,kw2 [agent:name]\n"
+            "/recipes — list recipes\n"
+            "/recipe <name> — show recipe details\n"
+            "/delrecipe <name> — delete a recipe\n\n"
+            "Or just send any text to queue a task."
+        )
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)  # type: ignore[union-attr]
+
+    elif action == "settings":
+        agent = _agent(chat_id)
+        project = _project_dir(chat_id).replace(os.path.expanduser('~'), '~')
+        available_agents = list(settings.agent_commands.keys())
+
+        text = (
+            f"⚙️ *Settings*\n\n"
+            f"🤖 Agent: `{agent}`\n"
+            f"📁 Project: `{project}`\n"
+        )
+        buttons = [
+            InlineKeyboardButton(f"{'✅ ' if a == agent else ''}{a}", callback_data=f"setagent:{a}")
+            for a in available_agents
+        ]
+        keyboard = InlineKeyboardMarkup(
+            [buttons, [InlineKeyboardButton("◀️ Back", callback_data="menu:back")]]
+        )
+        await query.edit_message_text(  # type: ignore[union-attr]
+            text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN,
+        )
+
+    elif action == "back":
+        # Re-show the /start menu
+        agent = _agent(chat_id)
+        project = _project_dir(chat_id).replace(os.path.expanduser('~'), '~')
+        text = (
+            f"👋 *TaskPilot ready*\n\n"
+            f"🤖 Agent: `{agent}`\n"
+            f"📁 Project: `{project}`\n\n"
+            "Send any text to create a task, or tap a button:"
+        )
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📊 Status", callback_data="menu:status"),
+                InlineKeyboardButton("📦 Queue", callback_data="menu:queue"),
+                InlineKeyboardButton("📜 History", callback_data="menu:history"),
+            ],
+            [
+                InlineKeyboardButton("⚙️ Settings", callback_data="menu:settings"),
+                InlineKeyboardButton("❓ Help", callback_data="menu:help"),
+            ],
+        ])
+        await query.edit_message_text(  # type: ignore[union-attr]
+            text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN,
+        )
+
+
+@auth_required
+async def handle_setagent_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle agent selection from Settings panel."""
+    query = update.callback_query
+    await query.answer()  # type: ignore[union-attr]
+
+    data = query.data or ""  # type: ignore[union-attr]
+    new_agent = data.split(":", 1)[1] if ":" in data else ""
+
+    if new_agent not in settings.agent_commands:
+        await query.edit_message_text("❓ Unknown agent.")  # type: ignore[union-attr]
+        return
+
+    chat_id = query.message.chat_id  # type: ignore[union-attr]
+    _chat_agent[chat_id] = new_agent
+    await set_chat_pref(chat_id, agent=new_agent)
+
+    project = _project_dir(chat_id).replace(os.path.expanduser('~'), '~')
+    available_agents = list(settings.agent_commands.keys())
+
+    text = (
+        f"⚙️ *Settings*\n\n"
+        f"🤖 Agent: `{new_agent}` ✓\n"
+        f"📁 Project: `{project}`\n"
+    )
+    buttons = [
+        InlineKeyboardButton(f"{'✅ ' if a == new_agent else ''}{a}", callback_data=f"setagent:{a}")
+        for a in available_agents
+    ]
+    keyboard = InlineKeyboardMarkup(
+        [buttons, [InlineKeyboardButton("◀️ Back", callback_data="menu:back")]]
+    )
+    await query.edit_message_text(  # type: ignore[union-attr]
+        text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+@auth_required
+async def handle_task_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle post-completion action buttons (retry, output)."""
+    query = update.callback_query
+    await query.answer()  # type: ignore[union-attr]
+
+    data = query.data or ""  # type: ignore[union-attr]
+    parts = data.split(":", 2)
+    if len(parts) != 2:
+        return
+
+    action, task_id_str = parts
+    try:
+        task_id = int(task_id_str)
+    except ValueError:
+        return
+
+    chat_id = query.message.chat_id  # type: ignore[union-attr]
+
+    if action == "taskretry":
+        try:
+            new_task = await retry_task(task_id)
+        except ValueError as e:
+            await query.edit_message_text(f"⚠️ {e}")  # type: ignore[union-attr]
+            return
+        if new_task is None:
+            await query.edit_message_text(  # type: ignore[union-attr]
+                f"Task #{task_id} not found or not failed/cancelled."
+            )
+        else:
+            await query.edit_message_text(  # type: ignore[union-attr]
+                f"🔄 Retried #{task_id} → new task #{new_task.id} (`{new_task.agent}`)",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+
+    elif action == "taskoutput":
+        task = await get_task_by_id(task_id)
+        if task is None:
+            await query.edit_message_text(f"Task #{task_id} not found.")  # type: ignore[union-attr]
+        elif not task.full_output:
+            await query.edit_message_text(  # type: ignore[union-attr]
+                f"Task #{task_id} has no output yet."
+            )
+        elif len(task.full_output) > MAX_MSG_LEN:
+            buf = io.BytesIO(task.full_output.encode("utf-8"))
+            buf.name = f"task_{task_id}_output.txt"
+            await query.message.reply_document(  # type: ignore[union-attr]
+                document=buf,
+                caption=f"📄 Output for #{task_id} ({len(task.full_output)} chars)",
+            )
+        else:
+            await query.message.reply_text(  # type: ignore[union-attr]
+                f"📄 Output for #{task_id}:\n\n{task.full_output}"
+            )
+
+
+# ── Recipe commands ─────────────────────────────────────────────────
+
+@auth_required
+async def cmd_recipes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List all saved recipes."""
+    recipes = await list_recipes()
+    if not recipes:
+        await _send(update, "📭 No recipes saved. Use /addrecipe to create one.")
+        return
+
+    lines = ["🧪 *Saved recipes:*"]
+    for r in recipes:
+        triggers = ", ".join(r.triggers[:5])
+        extra = f" (+{len(r.triggers)-5} more)" if len(r.triggers) > 5 else ""
+        agent_info = f" [{r.agent}]" if r.agent else ""
+        lines.append(f"  • {r.name}{agent_info} — triggers: {triggers}{extra}")
+    await _send(update, "\n".join(lines))
+
+
+@auth_required
+async def cmd_addrecipe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Add a recipe: /addrecipe <name> triggers:kw1,kw2 [agent:name] [prefix:text] [suffix:text] [setup:cmd1|cmd2] [skills:s1,s2]"""
+    await _load_prefs(_chat_id(update))
+    if not context.args or len(context.args) < 2:
+        await _send(
+            update,
+            "Usage: /addrecipe <name> triggers:kw1,kw2 [agent:name] "
+            "[prefix:text] [suffix:text] [setup:cmd1|cmd2] [skills:s1,s2]",
+        )
+        return
+
+    name = _sanitize_text(context.args[0])
+    if not name or len(name) > 128:
+        await _send(update, "⚠️ Recipe name must be 1-128 characters.")
+        return
+
+    rest = " ".join(context.args[1:])
+    triggers: list[str] = []
+    agent: str | None = None
+    project_dir: str | None = None
+    prefix: str | None = None
+    suffix: str | None = None
+    setup_commands: list[str] = []
+    skills: list[str] = []
+
+    # Parse key:value pairs from rest
+    import re
+    # Extract triggers:...
+    m = re.search(r'triggers?:([^\s]+)', rest)
+    if m:
+        triggers = [t.strip() for t in m.group(1).split(",") if t.strip()]
+    # Extract agent:...
+    m = re.search(r'agent:([^\s]+)', rest)
+    if m:
+        agent = m.group(1)
+    # Extract project:...
+    m = re.search(r'project:([^\s]+)', rest)
+    if m:
+        project_dir = m.group(1)
+    # Extract prefix:...
+    m = re.search(r'prefix:(.+?)(?=\s+\w+:|$)', rest)
+    if m:
+        prefix = m.group(1).strip()
+    # Extract suffix:...
+    m = re.search(r'suffix:(.+?)(?=\s+\w+:|$)', rest)
+    if m:
+        suffix = m.group(1).strip()
+    # Extract setup:cmd1|cmd2
+    m = re.search(r'setup:(.+?)(?=\s+\w+:|$)', rest)
+    if m:
+        setup_commands = [c.strip() for c in m.group(1).split("|") if c.strip()]
+    # Extract skills:s1,s2
+    m = re.search(r'skills?:([^\s]+)', rest)
+    if m:
+        skills = [s.strip() for s in m.group(1).split(",") if s.strip()]
+
+    if not triggers:
+        await _send(update, "⚠️ At least one trigger keyword is required. Use triggers:kw1,kw2")
+        return
+
+    chat_id = _chat_id(update)
+    try:
+        recipe = await save_recipe(
+            name=name,
+            triggers=triggers,
+            agent=agent,
+            project_dir=project_dir,
+            setup_commands=setup_commands,
+            skills=skills,
+            prompt_prefix=prefix,
+            prompt_suffix=suffix,
+            chat_id=chat_id,
+        )
+    except ValueError as e:
+        await _send(update, f"⚠️ {e}")
+        return
+
+    lines = [f"🧪 Recipe '{recipe.name}' saved:"]
+    lines.append(f"  Triggers: {', '.join(recipe.triggers)}")
+    if recipe.agent:
+        lines.append(f"  Agent: {recipe.agent}")
+    if recipe.setup_commands:
+        lines.append(f"  Setup: {len(recipe.setup_commands)} command(s)")
+    if recipe.skills:
+        lines.append(f"  Skills: {', '.join(recipe.skills)}")
+    if recipe.prompt_prefix:
+        lines.append(f"  Prefix: {recipe.prompt_prefix[:60]}")
+    if recipe.prompt_suffix:
+        lines.append(f"  Suffix: {recipe.prompt_suffix[:60]}")
+    await _send(update, "\n".join(lines))
+
+
+@auth_required
+async def cmd_delrecipe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Delete a recipe: /delrecipe <name>"""
+    if not context.args:
+        await _send(update, "Usage: /delrecipe <name>")
+        return
+
+    name = context.args[0]
+    deleted = await delete_recipe(name)
+    if deleted:
+        await _send(update, f"🗑️ Recipe '{name}' deleted.")
+    else:
+        await _send(update, f"❓ Recipe '{name}' not found.")
+
+
+@auth_required
+async def cmd_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show details of a recipe: /recipe <name>"""
+    if not context.args:
+        await _send(update, "Usage: /recipe <name>")
+        return
+
+    name = context.args[0]
+    recipe = await get_recipe_by_name(name)
+    if recipe is None:
+        await _send(update, f"❓ Recipe '{name}' not found.")
+        return
+
+    lines = [f"🧪 *Recipe: {recipe.name}*"]
+    lines.append(f"  Triggers: {', '.join(recipe.triggers)}")
+    if recipe.agent:
+        lines.append(f"  Agent: `{recipe.agent}`")
+    if recipe.project_dir:
+        lines.append(f"  Project dir: `{recipe.project_dir}`")
+    if recipe.setup_commands:
+        lines.append(f"  Setup commands:")
+        for cmd in recipe.setup_commands:
+            lines.append(f"    `{cmd[:80]}`")
+    if recipe.skills:
+        lines.append(f"  Skills: {', '.join(recipe.skills)}")
+    if recipe.prompt_prefix:
+        lines.append(f"  Prefix: {recipe.prompt_prefix[:100]}")
+    if recipe.prompt_suffix:
+        lines.append(f"  Suffix: {recipe.prompt_suffix[:100]}")
+    await _send(update, "\n".join(lines))
+
+
+@auth_required
+async def handle_recipe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle recipe confirmation/skip callback from auto-match."""
+    query = update.callback_query
+    await query.answer()  # type: ignore[union-attr]
+
+    data = query.data or ""  # type: ignore[union-attr]
+    # Split only on first colon: "recipeuse:42:ros" → action="recipeuse", rest="42:ros"
+    if ":" not in data:
+        return
+
+    action, rest = data.split(":", 1)
+
+    chat_id = query.message.chat_id  # type: ignore[union-attr]
+    await _load_prefs(chat_id)
+
+    if action == "recipeskip":
+        # User chose to skip recipe — task is already queued without enrichment
+        try:
+            task_id = int(rest)
+        except ValueError:
+            return
+        await query.edit_message_text(  # type: ignore[union-attr]
+            f"📋 Task #{task_id} queued without recipe."
+        )
+
+    elif action == "recipeuse":
+        # Parse recipeuse:<task_id>:<recipe_name>
+        sub_parts = rest.split(":", 1)
+        if len(sub_parts) != 2:
+            return
+        try:
+            task_id = int(sub_parts[0])
+        except ValueError:
+            return
+        recipe_name = sub_parts[1]
+
+        recipe = await get_recipe_by_name(recipe_name)
+        if recipe is None:
+            await query.edit_message_text(f"❓ Recipe '{recipe_name}' no longer exists.")  # type: ignore[union-attr]
+            return
+
+        # Apply recipe overrides to the task
+        task = await get_task_by_id(task_id)
+        if task is None or task.status != TaskStatus.PENDING:
+            await query.edit_message_text(  # type: ignore[union-attr]
+                f"⚠️ Task #{task_id} already started or not found."
+            )
+            return
+
+        # Enrich the prompt and re-enqueue with recipe settings
+        enriched_prompt = _enrich_prompt(task.prompt, recipe)
+        await _apply_recipe_to_task(task_id, recipe, enriched_prompt)
+
+        await query.edit_message_text(  # type: ignore[union-attr]
+            f"🧪 Recipe '{recipe_name}' applied to task #{task_id}",
+        )
+
+
+def _enrich_prompt(prompt: str, recipe) -> str:
+    """Build the enriched prompt with prefix, skill content, and suffix."""
+    parts = []
+
+    # Add setup commands as context
+    if recipe.setup_commands:
+        setup_block = "\n".join(recipe.setup_commands)
+        parts.append(f"[Setup commands to run first:\n{setup_block}\n]")
+
+    # Load skill SKILL.md content if available
+    if recipe.skills:
+        skills_dir = os.path.expanduser(settings.skills_dir)
+        for skill_name in recipe.skills:
+            skill_path = os.path.join(skills_dir, skill_name, "SKILL.md")
+            if os.path.isfile(skill_path):
+                try:
+                    with open(skill_path, "r") as f:
+                        content = f.read(10000)  # Cap at 10K chars per skill
+                    parts.append(f"[Skill: {skill_name}]\n{content}\n[/Skill]")
+                except OSError:
+                    pass
+
+    if recipe.prompt_prefix:
+        parts.append(recipe.prompt_prefix)
+
+    parts.append(prompt)
+
+    if recipe.prompt_suffix:
+        parts.append(recipe.prompt_suffix)
+
+    return "\n\n".join(parts)
+
+
 # ── Build the Application ───────────────────────────────────────────
 
 def build_app(runner=None) -> Application:
@@ -750,7 +1285,15 @@ def build_app(runner=None) -> Application:
     app.add_handler(CommandHandler("chain", cmd_chain))
     app.add_handler(CommandHandler("chains", cmd_chains))
     app.add_handler(CommandHandler("delchain", cmd_delchain))
+    app.add_handler(CommandHandler("recipes", cmd_recipes))
+    app.add_handler(CommandHandler("addrecipe", cmd_addrecipe))
+    app.add_handler(CommandHandler("delrecipe", cmd_delrecipe))
+    app.add_handler(CommandHandler("recipe", cmd_recipe))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(handle_agent_callback, pattern=r"^switch:"))
+    app.add_handler(CallbackQueryHandler(handle_menu_callback, pattern=r"^menu:"))
+    app.add_handler(CallbackQueryHandler(handle_setagent_callback, pattern=r"^setagent:"))
+    app.add_handler(CallbackQueryHandler(handle_task_action_callback, pattern=r"^task(retry|output):"))
+    app.add_handler(CallbackQueryHandler(handle_recipe_callback, pattern=r"^recipe(use|skip):"))
 
     return app

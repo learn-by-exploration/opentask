@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     db_path: str = "./data/taskpilot.db"
     output_summary_max_chars: int = 500
 
+    # Skills directory for installed skill packages
+    skills_dir: str = "~/.taskpilot/skills"
+
     # Web dashboard
     dashboard_enabled: bool = True
     dashboard_host: str = "127.0.0.1"

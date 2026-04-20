@@ -52,6 +52,28 @@ async def _run() -> None:
     # Initialize the application (connects to Telegram)
     await app.initialize()
     await app.start()
+
+    # Register commands in Telegram's "/" menu
+    from telegram import BotCommand
+    await app.bot.set_my_commands([
+        BotCommand("start", "Main menu"),
+        BotCommand("status", "Current task status"),
+        BotCommand("queue", "Pending tasks"),
+        BotCommand("history", "Recent tasks"),
+        BotCommand("cancel", "Cancel a task"),
+        BotCommand("retry", "Re-queue a failed task"),
+        BotCommand("project", "Set project directory"),
+        BotCommand("agent", "Set agent"),
+        BotCommand("output", "Get full task output"),
+        BotCommand("repeat", "Repeat a task N times"),
+        BotCommand("chains", "List saved chains"),
+        BotCommand("recipes", "List saved recipes"),
+        BotCommand("addrecipe", "Create a recipe"),
+        BotCommand("delrecipe", "Delete a recipe"),
+        BotCommand("recipe", "Show recipe details"),
+        BotCommand("help", "Show all commands"),
+    ])
+
     updater = app.updater
     await updater.start_polling(drop_pending_updates=True)
 

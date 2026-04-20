@@ -569,9 +569,10 @@ class TestCmdChains:
 # ── handle_text ──────────────────────────────────────────────────────
 
 class TestHandleText:
+    @patch("app.telegram.bot.match_recipe", new_callable=AsyncMock, return_value=None)
     @patch("app.telegram.bot.get_chat_prefs", new_callable=AsyncMock, return_value={"project_dir": None, "agent": None})
     @patch("app.telegram.bot.enqueue_task", new_callable=AsyncMock)
-    async def test_enqueue_auto_queues_with_default(self, mock_enqueue, mock_prefs):
+    async def test_enqueue_auto_queues_with_default(self, mock_enqueue, mock_prefs, mock_match):
         mock_task = MagicMock()
         mock_task.id = 1
         mock_task.agent = "opencode"
