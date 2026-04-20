@@ -28,6 +28,7 @@ from app.core.broker import (
     cancel_task_by_id,
     delete_chain,
     delete_recipe,
+    enqueue_followup,
     enqueue_repeat_task,
     enqueue_task,
     get_chain_by_name,
@@ -57,6 +58,7 @@ logger = logging.getLogger(__name__)
 _chat_project_dir: dict[int, str] = {}
 _chat_agent: dict[int, str] = {}
 _chat_model: dict[int, str] = {}
+_chat_followup: dict[int, int] = {}  # chat_id → parent_task_id for follow-up mode
 _runner_ref = None  # set by build_app() to enable /cancel subprocess kill
 
 MAX_MSG_LEN = 4096
@@ -171,7 +173,13 @@ async def make_notify_callback(
         if task.status in (TaskStatus.FAILED, TaskStatus.CANCELLED):
             buttons.append(InlineKeyboardButton("🔄 Retry", callback_data=f"taskretry:{task.id}"))
         buttons.append(InlineKeyboardButton("📤 Full Output", callback_data=f"taskoutput:{task.id}"))
+        buttons.append(InlineKeyboardButton("💬 Follow Up", callback_data=f"taskfollowup:{task.id}"))
         keyboard = InlineKeyboardMarkup([buttons])
+
+        # Auto-continue conversation mode for follow-up tasks
+        if task.parent_task_id and task.telegram_chat_id:
+            _chat_followup[task.telegram_chat_id] = task.id
+            text += "\n💬 _Conversation active — just type your next message._"
 
         for i in range(0, len(text), MAX_MSG_LEN):
             # Only attach keyboard to the last chunk
@@ -284,6 +292,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/history [N] — recent tasks\n"
         "/cancel [id] — cancel running or pending task\n"
         "/retry <id> — re-queue a failed task\n"
+        "/continue <id> <prompt> — follow-up on a completed task\n"
+        "/cancel\\_followup — exit follow-up mode\n"
         "/project <path> — set project dir\n"
         "/agent <name> — set agent\n"
         "/model <name> — set model (sonnet, opus, etc.)\n"
@@ -303,7 +313,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/recipe <name> — show recipe details\n"
         "/delrecipe <name> — delete a recipe\n\n"
         "/help — this message\n\n"
-        "Or just send any text to queue a task."
+        "Or just send any text to queue a task.\n"
+        "💡 Tap *Follow Up* on any completed task to continue the discussion."
     )
     await _send(update, text)
 
@@ -706,6 +717,63 @@ async def cmd_delchain(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await _send(update, f"❓ Chain '{name}' not found.")
 
 
+# ── Follow-up / continue commands ───────────────────────────────────
+
+
+@auth_required
+async def cmd_continue(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/continue <task_id> <prompt> — send a follow-up to a completed task."""
+    parts = (update.message.text or "").split(None, 2)  # type: ignore[union-attr]
+    if len(parts) < 3:
+        await update.message.reply_text(  # type: ignore[union-attr]
+            "Usage: `/continue <task_id> <prompt>`", parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    try:
+        parent_id = int(parts[1])
+    except ValueError:
+        await _send(update, "⚠️ Invalid task ID.")
+        return
+
+    prompt = _sanitize_text(parts[2])
+    if not prompt:
+        await _send(update, "⚠️ Prompt cannot be empty.")
+        return
+    if len(prompt) > MAX_PROMPT_LEN:
+        await _send(update, f"⚠️ Prompt too long ({len(prompt)} chars). Max is {MAX_PROMPT_LEN}.")
+        return
+
+    chat_id = _chat_id(update)
+    try:
+        task = await enqueue_followup(
+            parent_task_id=parent_id,
+            prompt=prompt,
+            chat_id=chat_id,
+            msg_id=update.message.message_id,  # type: ignore[union-attr]
+        )
+    except ValueError as e:
+        await _send(update, f"⚠️ {e}")
+        return
+
+    await update.message.reply_text(  # type: ignore[union-attr]
+        f"💬 Follow-up #{task.id} → #{parent_id} (`{task.agent}`)\n"
+        f"_Continues the previous session._",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+@auth_required
+async def cmd_cancel_followup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/cancel_followup — exit follow-up mode."""
+    chat_id = _chat_id(update)
+    parent_id = _chat_followup.pop(chat_id, None)
+    if parent_id:
+        await _send(update, f"✅ Exited follow-up mode (was following task #{parent_id}).")
+    else:
+        await _send(update, "ℹ️ Not in follow-up mode.")
+
+
 # ── Text message → enqueue ──────────────────────────────────────────
 
 def _sanitize_text(text: str) -> str:
@@ -725,6 +793,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     chat_id = _chat_id(update)
+
+    # Follow-up mode: if active, route to follow-up instead of new task
+    parent_id = _chat_followup.get(chat_id)
+    if parent_id:
+        try:
+            task = await enqueue_followup(
+                parent_task_id=parent_id,
+                prompt=prompt,
+                chat_id=chat_id,
+                msg_id=update.message.message_id,  # type: ignore[union-attr]
+            )
+        except ValueError as e:
+            await _send(update, f"⚠️ {e}")
+            return
+        # Update conversation pointer to the new task
+        _chat_followup[chat_id] = task.id
+        await update.message.reply_text(  # type: ignore[union-attr]
+            f"💬 Follow-up #{task.id} → #{parent_id} (`{task.agent}`)\n"
+            f"_Conversation active — keep typing or /cancel\\_followup to exit._",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
     current_agent = _agent(chat_id)
     current_model = _model(chat_id)
 
@@ -991,6 +1082,8 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             "/history [N] — recent tasks\n"
             "/cancel [id] — cancel running or pending task\n"
             "/retry <id> — re-queue a failed task\n"
+            "/continue <id> <prompt> — follow-up on a completed task\n"
+            "/cancel\\_followup — exit follow-up mode\n"
             "/project <path> — set project dir\n"
             "/agent <name> — set agent\n"
             "/model <name> — set model (sonnet, opus, etc.)\n"
@@ -1009,7 +1102,8 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             "/recipes — list recipes\n"
             "/recipe <name> — show recipe details\n"
             "/delrecipe <name> — delete a recipe\n\n"
-            "Or just send any text to queue a task."
+            "Or just send any text to queue a task.\n"
+            "💡 Tap *Follow Up* on any completed task to continue the discussion."
         )
         await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)  # type: ignore[union-attr]
 
@@ -1153,6 +1247,26 @@ async def handle_task_action_callback(update: Update, context: ContextTypes.DEFA
             await query.message.reply_text(  # type: ignore[union-attr]
                 f"📄 Output for #{task_id}:\n\n{task.full_output}"
             )
+
+    elif action == "taskfollowup":
+        task = await get_task_by_id(task_id)
+        if task is None:
+            await query.edit_message_text(f"Task #{task_id} not found.")  # type: ignore[union-attr]
+            return
+        if task.status not in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+            await query.edit_message_text(  # type: ignore[union-attr]
+                f"⚠️ Task #{task_id} is {task.status.value} — wait for it to finish first."
+            )
+            return
+        # Set follow-up state so next plain text message continues this task
+        _chat_followup[chat_id] = task_id
+        await query.message.reply_text(  # type: ignore[union-attr]
+            f"💬 *Conversation mode* for task #{task_id}\n\n"
+            f"Type messages to continue the agent session.\n"
+            f"Each reply continues the same conversation.\n"
+            f"Send /cancel\\_followup to exit.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
 
 
 # ── Recipe commands ─────────────────────────────────────────────────
@@ -1441,6 +1555,8 @@ def build_app(runner=None) -> Application:
     app.add_handler(CommandHandler("setmodel", cmd_setmodel))
     app.add_handler(CommandHandler("output", cmd_output))
     app.add_handler(CommandHandler("retry", cmd_retry))
+    app.add_handler(CommandHandler("continue", cmd_continue))
+    app.add_handler(CommandHandler("cancel_followup", cmd_cancel_followup))
     app.add_handler(CommandHandler("repeat", cmd_repeat))
     app.add_handler(CommandHandler("savechain", cmd_savechain))
     app.add_handler(CommandHandler("chain", cmd_chain))
@@ -1456,7 +1572,7 @@ def build_app(runner=None) -> Application:
     app.add_handler(CallbackQueryHandler(handle_model_switch_callback, pattern=r"^modelswitch:"))
     app.add_handler(CallbackQueryHandler(handle_menu_callback, pattern=r"^menu:"))
     app.add_handler(CallbackQueryHandler(handle_setagent_callback, pattern=r"^setagent:"))
-    app.add_handler(CallbackQueryHandler(handle_task_action_callback, pattern=r"^task(retry|output):"))
+    app.add_handler(CallbackQueryHandler(handle_task_action_callback, pattern=r"^task(retry|output|followup):"))
     app.add_handler(CallbackQueryHandler(handle_recipe_callback, pattern=r"^recipe(use|skip):"))
 
     return app

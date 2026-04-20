@@ -314,6 +314,14 @@ class AgentRunner:
                 # Insert model flag right after the command name (argv[0])
                 argv[1:1] = flag_parts
 
+        # Inject continue flag for follow-up tasks
+        if task.parent_task_id:
+            continue_flag = settings.agent_continue_flags.get(task.agent)
+            if continue_flag:
+                continue_parts = shlex.split(continue_flag)
+                # Insert after command name (argv[0])
+                argv[1:1] = continue_parts
+
         return argv
 
     def _summarize(self, output: str, exit_code: int) -> str:

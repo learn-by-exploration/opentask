@@ -62,6 +62,7 @@ async def _run() -> None:
         BotCommand("history", "Recent tasks"),
         BotCommand("cancel", "Cancel a task"),
         BotCommand("retry", "Re-queue a failed task"),
+        BotCommand("continue", "Follow up on a task"),
         BotCommand("project", "Set project directory"),
         BotCommand("agent", "Set agent"),
         BotCommand("model", "Set model override"),

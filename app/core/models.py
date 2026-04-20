@@ -72,6 +72,7 @@ class Task(Base):
     project_dir: Mapped[str] = mapped_column(String(512), nullable=False)
     agent: Mapped[str] = mapped_column(String(64), nullable=False)
     model: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    parent_task_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     status: Mapped[TaskStatus] = mapped_column(
         Enum(TaskStatus), default=TaskStatus.PENDING, nullable=False
     )

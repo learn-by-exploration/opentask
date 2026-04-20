@@ -205,7 +205,7 @@ class TestQA03CommandInjection:
         return AgentRunner()
 
     def _task(self, prompt, agent="test-agent", project_dir="/tmp"):
-        return SimpleNamespace(prompt=prompt, agent=agent, project_dir=project_dir, model=None)
+        return SimpleNamespace(prompt=prompt, agent=agent, project_dir=project_dir, model=None, parent_task_id=None)
 
     def _build(self, prompt):
         from app.config.settings import settings
@@ -821,7 +821,7 @@ class TestQA13RunnerValidation:
             "test-agent": "echo {prompt}"
         })
         r = AgentRunner()
-        task = SimpleNamespace(prompt="hello world", agent="test-agent", project_dir="/tmp", model=None)
+        task = SimpleNamespace(prompt="hello world", agent="test-agent", project_dir="/tmp", model=None, parent_task_id=None)
         cmd = r._build_command(task)
         assert isinstance(cmd, list)
         assert any("hello world" in a for a in cmd)
@@ -829,7 +829,7 @@ class TestQA13RunnerValidation:
     def test_build_command_unknown_agent_fallback(self):
         from app.core.runner import AgentRunner
         r = AgentRunner()
-        task = SimpleNamespace(prompt="test", agent="nonexistent_agent", project_dir="/tmp", model=None)
+        task = SimpleNamespace(prompt="test", agent="nonexistent_agent", project_dir="/tmp", model=None, parent_task_id=None)
         cmd = r._build_command(task)
         # Should still produce a valid command (fallback behavior)
         assert isinstance(cmd, list)

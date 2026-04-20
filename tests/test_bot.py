@@ -16,6 +16,7 @@ from app.core.models import Task, TaskChain, TaskStatus, ChainStatus
 from app.telegram.bot import (
     MAX_MSG_LEN,
     _chat_agent,
+    _chat_followup,
     _chat_project_dir,
     _is_allowed_project_dir,
     _status_emoji,
@@ -93,6 +94,7 @@ def _make_task(**overrides) -> Task:
         repeat_until=None,
         chain_id=None,
         chain_step=None,
+        parent_task_id=None,
     )
     defaults.update(overrides)
     t = MagicMock(spec=Task)
@@ -106,9 +108,11 @@ def _clear_caches():
     """Reset in-memory caches between tests."""
     _chat_project_dir.clear()
     _chat_agent.clear()
+    _chat_followup.clear()
     yield
     _chat_project_dir.clear()
     _chat_agent.clear()
+    _chat_followup.clear()
 
 
 # ── Auth decorator ───────────────────────────────────────────────────

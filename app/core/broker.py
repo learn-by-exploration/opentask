@@ -105,6 +105,55 @@ async def switch_task_model(task_id: int, new_model: str) -> Task | None:
         return task
 
 
+async def enqueue_followup(
+    parent_task_id: int,
+    prompt: str,
+    chat_id: int | None = None,
+    msg_id: int | None = None,
+) -> Task:
+    """Create a follow-up task that continues the session of a parent task.
+
+    Inherits agent, project_dir, and model from the parent.
+    Raises ValueError if parent not found, not completed, or queue is full.
+    """
+    session = await get_session()
+    async with session, session.begin():
+        result = await session.execute(select(Task).where(Task.id == parent_task_id))
+        parent = result.scalar_one_or_none()
+        if parent is None:
+            raise ValueError(f"Task #{parent_task_id} not found")
+        if parent.status not in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+            raise ValueError(f"Task #{parent_task_id} is {parent.status.value} — only completed/failed tasks can be continued")
+
+        count_result = await session.execute(
+            select(func.count())
+            .select_from(Task)
+            .where(Task.status.in_([TaskStatus.PENDING, TaskStatus.RUNNING]))
+        )
+        active_count = count_result.scalar() or 0
+        if active_count >= settings.max_queue_size:
+            raise ValueError(
+                f"Queue full ({active_count}/{settings.max_queue_size})"
+            )
+
+        task = Task(
+            prompt=prompt,
+            project_dir=parent.project_dir,
+            agent=parent.agent,
+            model=parent.model,
+            parent_task_id=parent.id,
+            status=TaskStatus.PENDING,
+            telegram_chat_id=chat_id or parent.telegram_chat_id,
+            telegram_msg_id=msg_id,
+        )
+        session.add(task)
+        await session.flush()
+        await session.refresh(task)
+    if _runner_wake:
+        _runner_wake()
+    return task
+
+
 async def pick_next_task() -> Task | None:
     """Pick the oldest PENDING task and mark it RUNNING."""
     session = await get_session()

@@ -28,6 +28,12 @@ class Settings(BaseSettings):
 
     default_model: str = ""  # empty = use agent default; e.g. "sonnet" or "anthropic/claude-sonnet-4"
 
+    # Continue/session-resume flags per agent (for follow-up tasks)
+    agent_continue_flags: dict[str, str] = {
+        "opencode": "--continue",
+        "claude": "--continue",
+    }
+
     allowed_project_dirs: str = "~/ai,~/repos,~/projects"
 
     task_timeout_seconds: int = 1800

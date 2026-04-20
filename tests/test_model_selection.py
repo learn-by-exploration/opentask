@@ -303,6 +303,7 @@ class TestBuildCommandModel:
         task.model = None
         task.prompt = "fix bug"
         task.project_dir = "/tmp/proj"
+        task.parent_task_id = None
         argv = runner._build_command(task)
         assert "--model" not in " ".join(argv)
         assert "opencode" == argv[0]
@@ -316,6 +317,7 @@ class TestBuildCommandModel:
         task.model = "anthropic/claude-sonnet-4"
         task.prompt = "fix bug"
         task.project_dir = "/tmp/proj"
+        task.parent_task_id = None
         argv = runner._build_command(task)
         assert argv[0] == "opencode"
         assert "--model" in argv
@@ -330,6 +332,7 @@ class TestBuildCommandModel:
         task.model = "opus"
         task.prompt = "test"
         task.project_dir = "/tmp"
+        task.parent_task_id = None
         argv = runner._build_command(task)
         assert argv[0] == "claude"
         assert "--model" in argv
@@ -345,6 +348,7 @@ class TestBuildCommandModel:
         task.model = "haiku"
         task.prompt = "hello"
         task.project_dir = "/tmp"
+        task.parent_task_id = None
         argv = runner._build_command(task)
         # argv[0] = "opencode", argv[1] = "--model", argv[2] = "haiku", argv[3] = "run", ...
         assert argv[0] == "opencode"
@@ -359,6 +363,7 @@ class TestBuildCommandModel:
         task.model = ""
         task.prompt = "test"
         task.project_dir = "/tmp"
+        task.parent_task_id = None
         argv = runner._build_command(task)
         assert "--model" not in argv
 
@@ -370,6 +375,7 @@ class TestBuildCommandModel:
         task.model = "sonnet"
         task.prompt = "test"
         task.project_dir = "/tmp"
+        task.parent_task_id = None
         argv = runner._build_command(task)
         assert argv[0] == "echo"
 
@@ -382,6 +388,7 @@ class TestBuildCommandModel:
         task.model = "openai/gpt-5-nano"
         task.prompt = "test"
         task.project_dir = "/tmp"
+        task.parent_task_id = None
         argv = runner._build_command(task)
         model_idx = argv.index("--model")
         assert argv[model_idx + 1] == "openai/gpt-5-nano"
@@ -395,6 +402,7 @@ class TestBuildCommandModel:
         task.model = "sonnet"
         task.prompt = "test"
         task.project_dir = "/tmp"
+        task.parent_task_id = None
         with patch("app.core.runner.settings") as mock_settings:
             mock_settings.agent_commands = {"opencode": "opencode run {prompt}"}
             mock_settings.agent_model_flags = {}  # no model flag for opencode
@@ -990,6 +998,7 @@ class TestModelEdgeCases:
         task.model = "sonnet"
         task.prompt = "fix the big bad bug in auth.py"
         task.project_dir = "/tmp/my project"
+        task.parent_task_id = None
         argv = runner._build_command(task)
         assert "--model" in argv
         assert "sonnet" in argv
