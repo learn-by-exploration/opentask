@@ -310,7 +310,7 @@ async def test_execute_integration():
     tmp = tempfile.mkdtemp()
     completed = []
 
-    async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None):
+    async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None, git_diff=None):
         completed.append({"task_id": task_id, "exit_code": exit_code, "error_message": error_message})
         t = Task(id=task_id, prompt="x", project_dir=tmp, agent="test", status=TaskStatus.COMPLETED)
         t.exit_code = exit_code

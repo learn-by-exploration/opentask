@@ -22,6 +22,11 @@ def _make_task(**overrides) -> Task:
         "project_dir": "/home/user/project",
         "agent": "opencode",
         "status": TaskStatus.RUNNING,
+        "model": None,
+        "priority": 0,
+        "retry_count": 0,
+        "max_retries": 1,
+        "git_diff": None,
     }
     defaults.update(overrides)
     return Task(**defaults)
@@ -161,7 +166,7 @@ class TestRunnerTimeoutKill:
 
         captured = {}
 
-        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None):
+        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None, git_diff=None):
             captured["full_output"] = full_output
             captured["error_message"] = error_message
             task = _make_task(id=task_id, status=TaskStatus.FAILED)
@@ -824,7 +829,7 @@ class TestRunnerTypingWithProgress:
         monkeypatch.setattr(settings, "progress_interval_seconds", 0)  # trigger every line
         monkeypatch.setattr(settings, "allowed_project_dirs", [str(tmp_path)])
 
-        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None):
+        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None, git_diff=None):
             task = _make_task(id=task_id, status=TaskStatus.COMPLETED)
             task.exit_code = exit_code
             return task
@@ -864,7 +869,7 @@ class TestRunnerTypingWithProgress:
         monkeypatch.setattr(settings, "progress_interval_seconds", 0)
         monkeypatch.setattr(settings, "allowed_project_dirs", [str(tmp_path)])
 
-        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None):
+        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None, git_diff=None):
             task = _make_task(id=task_id, status=TaskStatus.COMPLETED)
             task.exit_code = exit_code
             return task

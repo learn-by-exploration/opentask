@@ -79,6 +79,11 @@ def _make_task(**overrides) -> Task:
         "repeat_remaining": None,
         "telegram_chat_id": None,
         "telegram_msg_id": None,
+        "model": None,
+        "priority": 0,
+        "retry_count": 0,
+        "max_retries": 1,
+        "git_diff": None,
     }
     defaults.update(overrides)
     return Task(**defaults)
@@ -632,7 +637,7 @@ class TestQA3PathWithSpecialChars:
 
         captured = {}
 
-        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None):
+        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None, git_diff=None):
             captured["exit_code"] = exit_code
             captured["error_message"] = error_message
             return _make_task(id=task_id, status=TaskStatus.FAILED)
@@ -837,7 +842,7 @@ class TestQA4ProcessTimeout:
 
         captured = {}
 
-        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None):
+        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None, git_diff=None):
             captured["full_output"] = full_output
             captured["error_message"] = error_message
             return _make_task(id=task_id, status=TaskStatus.FAILED)

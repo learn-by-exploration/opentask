@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from functools import wraps
 from typing import Any
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
     Application,
@@ -24,6 +24,7 @@ from app.config.settings import settings
 from app.core.broker import (
     _apply_recipe_to_task,
     advance_chain,
+    bump_task,
     cancel_running_task,
     cancel_task_by_id,
     delete_chain,
@@ -44,6 +45,7 @@ from app.core.broker import (
     retry_task,
     save_chain,
     save_recipe,
+    search_tasks,
     set_chat_pref,
     start_chain,
     switch_task_agent,
@@ -186,6 +188,16 @@ async def make_notify_callback(
         if task.error_message:
             err = task.error_message.replace('`', "'")
             text += f"\n⚠️ `{err}`\n"
+        # Git diff summary for successful tasks
+        git_diff = getattr(task, "git_diff", None)
+        if git_diff and isinstance(git_diff, str):
+            diff_text = git_diff.replace('`', "'")
+            text += f"\n📝 *Files changed:*\n```\n{diff_text}\n```\n"
+        # Auto-retry indicator
+        retry_count = getattr(task, "retry_count", 0)
+        max_retries = getattr(task, "max_retries", 1)
+        if isinstance(retry_count, int) and retry_count > 0:
+            text += f"\n🔄 _Auto-retry attempt {retry_count}/{max_retries}_\n"
 
         # Post-completion action buttons
         buttons = []
@@ -279,6 +291,17 @@ async def make_typing_callback(
 
 # ── Command handlers ────────────────────────────────────────────────
 
+# Persistent reply keyboard shown at bottom of chat
+_REPLY_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        [KeyboardButton("/status"), KeyboardButton("/queue"), KeyboardButton("/history")],
+        [KeyboardButton("/cancel"), KeyboardButton("/help")],
+    ],
+    resize_keyboard=True,
+    is_persistent=True,
+)
+
+
 @auth_required
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _load_prefs(_chat_id(update))
@@ -291,7 +314,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"📁 Project: `{project}`\n\n"
         "Send any text to create a task, or tap a button:"
     )
-    keyboard = InlineKeyboardMarkup([
+    inline_keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("📊 Status", callback_data="menu:status"),
             InlineKeyboardButton("📦 Queue", callback_data="menu:queue"),
@@ -302,11 +325,17 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             InlineKeyboardButton("❓ Help", callback_data="menu:help"),
         ],
     ])
+    # Send persistent reply keyboard first, then inline keyboard
     await update.get_bot().send_message(
         chat_id=chat_id,
         text=text,
-        reply_markup=keyboard,
+        reply_markup=_REPLY_KEYBOARD,
         parse_mode=ParseMode.MARKDOWN,
+    )
+    await update.get_bot().send_message(
+        chat_id=chat_id,
+        text="Quick actions:",
+        reply_markup=inline_keyboard,
     )
 
 
@@ -339,6 +368,9 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/recipes — list recipes\n"
         "/recipe <name> — show recipe details\n"
         "/delrecipe <name> — delete a recipe\n\n"
+        "*Queue management:*\n"
+        "/bump <id> — move a task to front of queue\n"
+        "/search <query> — search tasks by prompt text\n\n"
         "/help — this message\n\n"
         "Or just send any text to queue a task.\n"
         "💡 Tap *Follow Up* on any completed task to continue the discussion."
@@ -555,6 +587,48 @@ async def cmd_retry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             update,
             f"🔄 Retried #{task_id} → new task #{new_task.id} ({new_task.agent})",
         )
+
+
+# ── Bump command ────────────────────────────────────────────────────
+
+@auth_required
+async def cmd_bump(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Bump a pending task to the front of the queue: /bump <id>"""
+    if not context.args:
+        await _send(update, "Usage: /bump <task\\_id>")
+        return
+    try:
+        task_id = int(context.args[0])
+    except ValueError:
+        await _send(update, "Invalid task ID.")
+        return
+
+    task = await bump_task(task_id)
+    if task is None:
+        await _send(update, f"⚠️ Task #{task_id} not found or not pending.")
+    else:
+        await _send(update, f"⬆️ *#{task.id}* bumped to priority `{task.priority}`")
+
+
+# ── Search command ──────────────────────────────────────────────────
+
+@auth_required
+async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Search tasks by prompt text: /search <query>"""
+    if not context.args:
+        await _send(update, "Usage: /search <query>")
+        return
+
+    query = " ".join(context.args)
+    tasks = await search_tasks(query, limit=10)
+    if not tasks:
+        await _send(update, f"🔍 No tasks matching _{query}_")
+        return
+
+    lines = [f"🔍 *Search results for* _{query}_:\n"]
+    for t in tasks:
+        lines.append(_format_task(t))
+    await _send(update, "\n".join(lines))
 
 
 # ── Repeat commands ─────────────────────────────────────────────────
@@ -1223,6 +1297,9 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             "/recipes — list recipes\n"
             "/recipe <name> — show recipe details\n"
             "/delrecipe <name> — delete a recipe\n\n"
+            "*Queue management:*\n"
+            "/bump <id> — move a task to front of queue\n"
+            "/search <query> — search tasks by prompt text\n\n"
             "Or just send any text to queue a task.\n"
             "💡 Tap *Follow Up* on any completed task to continue the discussion."
         )
@@ -1678,6 +1755,8 @@ def build_app(runner=None) -> Application:
     app.add_handler(CommandHandler("setmodel", cmd_setmodel))
     app.add_handler(CommandHandler("output", cmd_output))
     app.add_handler(CommandHandler("retry", cmd_retry))
+    app.add_handler(CommandHandler("bump", cmd_bump))
+    app.add_handler(CommandHandler("search", cmd_search))
     app.add_handler(CommandHandler("continue", cmd_continue))
     app.add_handler(CommandHandler("cancel_followup", cmd_cancel_followup))
     app.add_handler(CommandHandler("repeat", cmd_repeat))

@@ -23,6 +23,7 @@ _TASK_SUMMARY_COLUMNS = (
     Task.chain_id, Task.chain_step,
     Task.repeat_total, Task.repeat_remaining, Task.repeat_until,
     Task.assigned_to, Task.worker_id, Task.heartbeat_at,
+    Task.priority, Task.retry_count, Task.max_retries, Task.git_diff,
     Task.created_at, Task.started_at, Task.completed_at, Task.duration_seconds,
 )
 
@@ -190,7 +191,7 @@ async def pick_next_task() -> Task | None:
                 Task.status == TaskStatus.PENDING,
                 Task.assigned_to.is_(None),  # skip remote-assigned tasks
             )
-            .order_by(Task.created_at.asc())
+            .order_by(Task.priority.desc(), Task.created_at.asc())
             .limit(1)
         )
         task = result.scalar_one_or_none()
@@ -383,6 +384,7 @@ async def complete_task(
     output_summary: str,
     full_output: str,
     error_message: str | None = None,
+    git_diff: str | None = None,
 ) -> Task | None:
     """Mark a task as completed or failed based on exit code.
 
@@ -403,6 +405,7 @@ async def complete_task(
                 output_summary=output_summary,
                 full_output=full_output,
                 error_message=error_message,
+                git_diff=git_diff,
                 completed_at=now,
             )
         )
@@ -512,7 +515,7 @@ async def get_pending_tasks() -> list[Task]:
         result = await session.execute(
             select(Task)
             .where(Task.status == TaskStatus.PENDING)
-            .order_by(Task.created_at.asc())
+            .order_by(Task.priority.desc(), Task.created_at.asc())
             .options(load_only(*_TASK_SUMMARY_COLUMNS))
         )
         return list(result.scalars().all())
@@ -954,6 +957,104 @@ async def set_chat_pref(chat_id: int, *, project_dir: str | None = None, agent: 
         if model is not None:
             prefs.model = model
         prefs.updated_at = _utcnow()
+
+
+# ── Priority / bump ─────────────────────────────────────────────────
+
+
+async def bump_task(task_id: int) -> Task | None:
+    """Bump a PENDING task to highest priority (max priority among pending + 1).
+
+    Returns updated task or None if not found / not pending.
+    """
+    session = await get_session()
+    async with session, session.begin():
+        result = await session.execute(
+            select(Task).where(Task.id == task_id, Task.status == TaskStatus.PENDING)
+        )
+        task = result.scalar_one_or_none()
+        if task is None:
+            return None
+        # Find the current max priority among pending tasks
+        max_result = await session.execute(
+            select(func.max(Task.priority))
+            .select_from(Task)
+            .where(Task.status == TaskStatus.PENDING)
+        )
+        max_prio = max_result.scalar() or 0
+        task.priority = max(max_prio + 1, task.priority + 1)
+        await session.flush()
+        await session.refresh(task)
+        return task
+
+
+# ── Search ───────────────────────────────────────────────────────────
+
+
+async def search_tasks(query: str, limit: int = 20) -> list[Task]:
+    """Search tasks by prompt text (case-insensitive LIKE match)."""
+    session = await get_session()
+    async with session:
+        result = await session.execute(
+            select(Task)
+            .where(Task.prompt.ilike(f"%{query}%"))
+            .order_by(Task.created_at.desc())
+            .limit(limit)
+            .options(load_only(*_TASK_SUMMARY_COLUMNS))
+        )
+        return list(result.scalars().all())
+
+
+# ── Auto-retry ───────────────────────────────────────────────────────
+
+
+async def auto_retry_task(task_id: int) -> Task | None:
+    """Auto-retry a FAILED task if it has retries remaining.
+
+    Returns the newly created task, or None if no retries left or task not eligible.
+    """
+    session = await get_session()
+    async with session, session.begin():
+        result = await session.execute(select(Task).where(Task.id == task_id))
+        source = result.scalar_one_or_none()
+        if source is None:
+            return None
+        if source.status != TaskStatus.FAILED:
+            return None
+        if source.retry_count >= source.max_retries:
+            return None
+        # Check for transient failure: exit_code < 0 (crashes, signals, timeouts)
+        if source.exit_code is not None and source.exit_code >= 0:
+            return None  # normal failures (user errors) don't auto-retry
+
+        # Check queue capacity
+        count_result = await session.execute(
+            select(func.count())
+            .select_from(Task)
+            .where(Task.status.in_([TaskStatus.PENDING, TaskStatus.RUNNING]))
+        )
+        active_count = count_result.scalar() or 0
+        if active_count >= settings.max_queue_size:
+            return None  # silently skip if queue is full
+
+        new_task = Task(
+            prompt=source.prompt,
+            project_dir=source.project_dir,
+            agent=source.agent,
+            model=source.model,
+            status=TaskStatus.PENDING,
+            telegram_chat_id=source.telegram_chat_id,
+            priority=source.priority,
+            retry_count=source.retry_count + 1,
+            max_retries=source.max_retries,
+            assigned_to=source.assigned_to,
+        )
+        session.add(new_task)
+        await session.flush()
+        await session.refresh(new_task)
+    if _runner_wake:
+        _runner_wake()
+    return new_task
 
 
 # ── Recipe CRUD ──────────────────────────────────────────────────────

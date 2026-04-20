@@ -17,6 +17,11 @@ def _make_task(**overrides) -> Task:
         "project_dir": "/home/user/project",
         "agent": "opencode",
         "status": TaskStatus.RUNNING,
+        "model": None,
+        "priority": 0,
+        "retry_count": 0,
+        "max_retries": 1,
+        "git_diff": None,
     }
     defaults.update(overrides)
     return Task(**defaults)
@@ -180,7 +185,7 @@ class TestExecuteIntegration:
 
         completed_tasks = []
 
-        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None):
+        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None, git_diff=None):
             completed_tasks.append({
                 "task_id": task_id,
                 "exit_code": exit_code,
@@ -218,7 +223,7 @@ class TestExecuteIntegration:
 
         completed_tasks = []
 
-        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None):
+        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None, git_diff=None):
             completed_tasks.append({"exit_code": exit_code, "error_message": error_message})
             task = _make_task(id=task_id, status=TaskStatus.FAILED)
             task.exit_code = exit_code
@@ -242,7 +247,7 @@ class TestExecuteIntegration:
 
         completed_tasks = []
 
-        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None):
+        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None, git_diff=None):
             completed_tasks.append({"exit_code": exit_code, "error_message": error_message})
             task = _make_task(id=task_id, status=TaskStatus.FAILED)
             return task

@@ -79,6 +79,7 @@ def _make_task(**overrides) -> Task:
         prompt="fix the bug",
         project_dir="/tmp/proj",
         agent="opencode",
+        model=None,
         status=TaskStatus.PENDING,
         telegram_chat_id=12345,
         created_at=datetime(2025, 1, 1),
@@ -95,6 +96,10 @@ def _make_task(**overrides) -> Task:
         chain_id=None,
         chain_step=None,
         parent_task_id=None,
+        priority=0,
+        retry_count=0,
+        max_retries=1,
+        git_diff=None,
     )
     defaults.update(overrides)
     t = MagicMock(spec=Task)
@@ -176,8 +181,8 @@ class TestCmdStart:
         ctx = _make_context()
         await cmd_start(update, ctx)
         bot = update.get_bot()
-        bot.send_message.assert_called_once()
-        text = bot.send_message.call_args.kwargs["text"]
+        assert bot.send_message.call_count == 2  # reply keyboard + inline keyboard
+        text = bot.send_message.call_args_list[0].kwargs["text"]
         assert "TaskPilot ready" in text
 
 

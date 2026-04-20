@@ -707,7 +707,7 @@ async def test_subprocess_integration():
     tmp = tempfile.mkdtemp()
     results = []
 
-    async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None):
+    async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None, git_diff=None):
         results.append({
             "task_id": task_id, "exit_code": exit_code,
             "output_summary": output_summary, "full_output": full_output,

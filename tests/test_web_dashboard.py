@@ -55,6 +55,11 @@ def _make_task(**overrides) -> SimpleNamespace:
         "telegram_chat_id": 12345,
         "telegram_msg_id": None,
         "repeat_until": None,
+        "model": None,
+        "priority": 0,
+        "retry_count": 0,
+        "max_retries": 1,
+        "git_diff": None,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)

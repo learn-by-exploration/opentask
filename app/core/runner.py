@@ -14,8 +14,8 @@ from typing import Any
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024  # 2 MB cap on stored output
 
 from app.config.settings import settings
-from app.core.broker import advance_chain, complete_task, get_chain_by_id, maybe_reenqueue, pick_next_task
-from app.core.models import ChainStatus, Task
+from app.core.broker import advance_chain, auto_retry_task, complete_task, get_chain_by_id, maybe_reenqueue, pick_next_task
+from app.core.models import ChainStatus, Task, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -193,12 +193,16 @@ class AgentRunner:
             exit_code = process.returncode if process.returncode is not None else -1
             summary = self._summarize(output, exit_code)
 
+            # Capture git diff summary for completed tasks
+            git_diff = await self._git_diff_summary(cwd) if exit_code == 0 else ""
+
             updated = await complete_task(
                 task_id=task.id,
                 exit_code=exit_code,
                 output_summary=summary,
                 full_output=output,
                 error_message=f"Exit code {exit_code}" if exit_code != 0 else None,
+                git_diff=git_diff,
             )
             if updated:
                 await self._after_complete(updated)
@@ -340,8 +344,42 @@ class AgentRunner:
         tail = "\n".join(lines[-10:])
         return tail[:max_chars] if tail else "(no output)"
 
+    @staticmethod
+    async def _git_diff_summary(cwd: str) -> str:
+        """Run `git diff --stat` in the task's working directory.
+
+        Returns a short summary of changed files, or empty string on error.
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git", "diff", "--stat", "HEAD~1",
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            diff_text = stdout.decode("utf-8", errors="replace").strip()
+            # Cap at 500 chars to keep notifications readable
+            return diff_text[:500] if diff_text else ""
+        except Exception:
+            return ""
+
     async def _after_complete(self, task: Task) -> None:
-        """Handle post-completion: notify, repeat, chain advance."""
+        """Handle post-completion: auto-retry, notify, repeat, chain advance."""
+        # Auto-retry transient failures (exit_code < 0: crash, signal, timeout)
+        if task.status == TaskStatus.FAILED:
+            retried = await auto_retry_task(task.id)
+            if retried:
+                logger.info("Auto-retry: task #%d → re-enqueued as #%d (attempt %d/%d)",
+                            task.id, retried.id, retried.retry_count, retried.max_retries)
+                # Still notify the user about the retry
+                if self._on_complete:
+                    try:
+                        await self._on_complete(task)
+                    except Exception:
+                        logger.exception("Notification callback failed for task #%d", task.id)
+                return
+
         if self._on_complete:
             try:
                 await self._on_complete(task)

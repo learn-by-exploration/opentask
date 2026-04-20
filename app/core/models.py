@@ -79,6 +79,7 @@ class Task(Base):
 
     output_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     full_output: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    git_diff: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     exit_code: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
@@ -100,6 +101,13 @@ class Task(Base):
     repeat_total: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     repeat_remaining: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     repeat_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # ── Priority (higher = picked sooner) ───────────────────────────
+    priority: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    # ── Auto-retry tracking ─────────────────────────────────────────
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_retries: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utcnow

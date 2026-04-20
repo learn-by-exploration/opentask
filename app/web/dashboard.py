@@ -55,6 +55,9 @@ def _task_to_dict(task: Any) -> dict:
         "repeat_remaining": task.repeat_remaining,
         "assigned_to": getattr(task, "assigned_to", None),
         "worker_id": getattr(task, "worker_id", None),
+        "priority": getattr(task, "priority", 0),
+        "retry_count": getattr(task, "retry_count", 0),
+        "git_diff": getattr(task, "git_diff", None),
     }
 
 

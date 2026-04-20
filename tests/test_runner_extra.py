@@ -17,6 +17,11 @@ def _make_task(**overrides) -> Task:
         "project_dir": "/home/user/project",
         "agent": "opencode",
         "status": TaskStatus.RUNNING,
+        "model": None,
+        "priority": 0,
+        "retry_count": 0,
+        "max_retries": 1,
+        "git_diff": None,
     }
     defaults.update(overrides)
     return Task(**defaults)
@@ -240,7 +245,7 @@ class TestExecuteEdgeCases:
         )
         monkeypatch.setattr(settings, "allowed_project_dirs", [str(tmp_path)])
 
-        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None):
+        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None, git_diff=None):
             task = _make_task(id=task_id, status=TaskStatus.COMPLETED)
             task.exit_code = exit_code
             return task
@@ -260,7 +265,7 @@ class TestExecuteEdgeCases:
         """Even when project_dir doesn't exist, _current_task_id is set at top of _execute."""
         from app.core.runner import AgentRunner
 
-        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None):
+        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None, git_diff=None):
             task = _make_task(id=task_id, status=TaskStatus.FAILED)
             return task
 
@@ -288,7 +293,7 @@ class TestExecuteEdgeCases:
 
         captured = {}
 
-        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None):
+        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None, git_diff=None):
             captured["full_output"] = full_output
             captured["exit_code"] = exit_code
             task = _make_task(id=task_id, status=TaskStatus.COMPLETED)
@@ -319,7 +324,7 @@ class TestExecuteEdgeCases:
 
         captured = {}
 
-        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None):
+        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None, git_diff=None):
             captured["full_output"] = full_output
             captured["exit_code"] = exit_code
             captured["error_message"] = error_message
@@ -350,7 +355,7 @@ class TestExecuteEdgeCases:
 
         captured = {}
 
-        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None):
+        async def fake_complete(task_id, exit_code, output_summary, full_output, error_message=None, git_diff=None):
             captured["exit_code"] = exit_code
             captured["error_message"] = error_message
             task = _make_task(id=task_id, status=TaskStatus.FAILED)
