@@ -1,0 +1,17 @@
+- [Home](home.md)
+- **User Guide**
+  - [Telegram Commands](guide/commands.md)
+  - [Recipes](guide/recipes.md)
+  - [Model Selection](guide/models.md)
+  - [Task Chains & Repeats](guide/chains.md)
+  - [Follow-Up Conversations](guide/followups.md)
+- **Deployment**
+  - [Quick Start](deploy/quickstart.md)
+  - [Docker](deploy/docker.md)
+  - [Systemd Service](deploy/systemd.md)
+  - [Remote Workers](deploy/workers.md)
+- **Reference**
+  - [Environment Variables](reference/env.md)
+  - [Dashboard & API](reference/dashboard.md)
+  - [Architecture](architecture/overview.md)
+  - [Specification](design/spec.md)

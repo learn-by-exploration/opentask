@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>OpenTask — Telegram AI Agent Bridge</title>
+  <meta name="description" content="Queue coding tasks from your phone, execute them on your dev machine via AI agents.">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify-themeable@0/dist/css/theme-simple-dark.css">
+  <style>
+    :root {
+      --base-font-size: 15px;
+      --theme-color: #42b983;
+      --sidebar-width: 260px;
+      --sidebar-nav-link-color--active: #42b983;
+      --sidebar-nav-link-border-color--active: #42b983;
+      --cover-background-color: #0d1117;
+    }
+    .markdown-section h1 { border-bottom: 2px solid #42b983; padding-bottom: 0.3em; }
+    .markdown-section table { display: table; width: 100%; }
+    .app-name-link img { max-width: 140px; }
+  </style>
+</head>
+<body>
+  <div id="app">Loading…</div>
+  <script>
+    window.$docsify = {
+      name: '🤖 OpenTask',
+      repo: 'learn-by-exploration/opentask',
+      loadSidebar: true,
+      subMaxLevel: 3,
+      auto2top: true,
+      search: {
+        placeholder: 'Search docs…',
+        noData: 'No results.',
+        depth: 3,
+      },
+      copyCode: {
+        buttonText: 'Copy',
+        successText: 'Copied',
+      },
+      homepage: 'home.md',
+      themeColor: '#42b983',
+    };
+  </script>
+  <!-- Docsify core -->
+  <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/docsify.min.js"></script>
+  <!-- Plugins -->
+  <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/plugins/search.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/docsify-copy-code@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-bash.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-python.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-json.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-ini.min.js"></script>
+  <!-- Mermaid -->
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script>
+    mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+    window.$docsify.markdown = {
+      renderer: {
+        code(code, lang) {
+          if (lang === 'mermaid') {
+            return '<div class="mermaid">' + code + '</div>';
+          }
+          return this.origin.code.apply(this, arguments);
+        },
+      },
+    };
+    // Render Mermaid after page change
+    const observer = new MutationObserver(() => {
+      document.querySelectorAll('.mermaid').forEach((el) => {
+        if (!el.getAttribute('data-processed')) {
+          mermaid.run({ nodes: [el] });
+        }
+      });
+    });
+    observer.observe(document.getElementById('app'), { childList: true, subtree: true });
+  </script>
+</body>
+</html>
