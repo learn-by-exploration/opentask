@@ -16,8 +16,8 @@ class Settings(BaseSettings):
     default_project_dir: str = "~/ai"
 
     agent_commands: dict[str, str] = {
-        "opencode": "opencode -p {prompt} --dir {project_dir}",
-        "aider": "aider --message {prompt} --yes --no-git",
+        "opencode": "opencode run {prompt}",
+        "claude": "claude -p {prompt} --allowedTools computer mcp --no-input",
     }
 
     allowed_project_dirs: str = "~/ai,~/repos,~/projects"

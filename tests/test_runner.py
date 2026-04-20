@@ -52,9 +52,11 @@ class TestBuildCommand:
         assert "fix the user's profile" in cmd
 
     def test_project_dir_with_spaces(self):
+        # project_dir is passed as cwd to subprocess, not in argv
         task = _make_task(project_dir="/home/user/my project")
         cmd = self.runner._build_command(task)
-        assert "/home/user/my project" in cmd
+        assert isinstance(cmd, list)
+        assert "opencode" in cmd
 
     def test_unknown_agent_returns_echo(self):
         task = _make_task(agent="nonexistent")
@@ -62,11 +64,11 @@ class TestBuildCommand:
         assert cmd[0] == "echo"
         assert "Unknown agent" in cmd[1]
 
-    def test_aider_agent(self):
-        task = _make_task(agent="aider")
+    def test_claude_agent(self):
+        task = _make_task(agent="claude")
         cmd = self.runner._build_command(task)
-        assert "aider" in cmd
-        assert "--message" in cmd
+        assert "claude" in cmd
+        assert "-p" in cmd
 
 
 # ── _summarize ──────────────────────────────────────────────────────

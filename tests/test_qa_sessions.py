@@ -684,8 +684,8 @@ class TestSession16Regression:
     """Regression: re-test previously found and fixed bugs."""
 
     @pytest.mark.asyncio
-    async def test_handle_text_queues_task_correctly(self, fresh_db):
-        """Regression: telegram_chat_id→chat_id kwarg mismatch."""
+    async def test_handle_text_shows_agent_picker(self, fresh_db):
+        """Regression: handle_text shows inline agent picker buttons."""
         from app.telegram.bot import handle_text
 
         update = MagicMock()
@@ -695,22 +695,23 @@ class TestSession16Regression:
         update.effective_chat.id = 12345
         update.message = MagicMock()
         update.message.text = "fix the bug"
-        ack = AsyncMock()
-        ack.edit_text = AsyncMock()
-        ack.message_id = 42
-        update.message.reply_text = AsyncMock(return_value=ack)
+        msg = AsyncMock()
+        msg.message_id = 42
+        update.message.reply_text = AsyncMock(return_value=msg)
         bot = AsyncMock()
         bot.send_message = AsyncMock()
         update.get_bot = MagicMock(return_value=bot)
 
         ctx = MagicMock()
         ctx.args = []
+        ctx.user_data = {}
         await handle_text(update, ctx)
 
-        # The ack message should be edited with task info
-        ack.edit_text.assert_called_once()
-        edit_text = ack.edit_text.call_args[0][0]
-        assert "Queued" in edit_text or "📋" in edit_text
+        # Should show agent picker with reply_markup
+        update.message.reply_text.assert_called_once()
+        call_kwargs = update.message.reply_text.call_args.kwargs
+        assert "reply_markup" in call_kwargs
+        assert ctx.user_data["pending_prompt"] == "fix the bug"
 
     @pytest.mark.asyncio
     async def test_complete_cancelled_returns_existing(self, fresh_db):
