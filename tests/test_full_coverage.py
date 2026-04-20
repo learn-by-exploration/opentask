@@ -567,6 +567,20 @@ class TestMainRecoveryLogs:
         monkeypatch.setattr(main_mod, "make_notify_callback", AsyncMock(return_value=AsyncMock()))
         monkeypatch.setattr(main_mod, "make_chain_notify_callback", AsyncMock(return_value=AsyncMock()))
         monkeypatch.setattr(main_mod, "make_progress_callback", AsyncMock(return_value=AsyncMock()))
+        monkeypatch.setattr(main_mod, "make_typing_callback", AsyncMock(return_value=AsyncMock()))
+
+        # Disable dashboard so uvicorn doesn't try to bind a port
+        monkeypatch.setattr(main_mod.settings, "dashboard_enabled", False)
+
+        # Mock AgentRunner.start so it doesn't block on the poll loop
+        from app.core.runner import AgentRunner
+
+        async def fake_start(self):
+            self._running = True
+            while self._running:
+                await asyncio.sleep(0.05)
+
+        monkeypatch.setattr(AgentRunner, "start", fake_start)
 
         async def send_signal():
             await asyncio.sleep(0.1)
@@ -608,6 +622,10 @@ class TestMainGracefulTimeout:
         monkeypatch.setattr(main_mod, "make_notify_callback", AsyncMock(return_value=AsyncMock()))
         monkeypatch.setattr(main_mod, "make_chain_notify_callback", AsyncMock(return_value=AsyncMock()))
         monkeypatch.setattr(main_mod, "make_progress_callback", AsyncMock(return_value=AsyncMock()))
+        monkeypatch.setattr(main_mod, "make_typing_callback", AsyncMock(return_value=AsyncMock()))
+
+        # Disable dashboard so uvicorn doesn't try to bind a port
+        monkeypatch.setattr(main_mod.settings, "dashboard_enabled", False)
 
         # Make runner.start() hang (ignores stop())
         original_stop = AgentRunner.stop

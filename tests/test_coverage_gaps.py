@@ -273,6 +273,16 @@ class TestMainDashboardImportError:
         monkeypatch.setattr(main_mod, "make_progress_callback", AsyncMock(return_value=AsyncMock()))
         monkeypatch.setattr(main_mod, "make_typing_callback", AsyncMock(return_value=AsyncMock()))
 
+        # Mock AgentRunner.start so it doesn't block on the poll loop
+        from app.core.runner import AgentRunner
+
+        async def fake_start(self):
+            self._running = True
+            while self._running:
+                await asyncio.sleep(0.05)
+
+        monkeypatch.setattr(AgentRunner, "start", fake_start)
+
         # Force uvicorn import to fail
         import builtins
         real_import = builtins.__import__
@@ -325,6 +335,16 @@ class TestMainWebTaskShutdown:
         monkeypatch.setattr(main_mod, "make_chain_notify_callback", AsyncMock(return_value=AsyncMock()))
         monkeypatch.setattr(main_mod, "make_progress_callback", AsyncMock(return_value=AsyncMock()))
         monkeypatch.setattr(main_mod, "make_typing_callback", AsyncMock(return_value=AsyncMock()))
+
+        # Mock AgentRunner.start so it doesn't block on the poll loop
+        from app.core.runner import AgentRunner
+
+        async def fake_start(self):
+            self._running = True
+            while self._running:
+                await asyncio.sleep(0.05)
+
+        monkeypatch.setattr(AgentRunner, "start", fake_start)
 
         # Mock uvicorn so we control the web_server and web_task
         mock_uvicorn = MagicMock()

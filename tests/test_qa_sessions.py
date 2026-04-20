@@ -858,20 +858,26 @@ class TestSession20DbHardening:
     async def test_wal_mode_enabled(self):
         """Verify WAL mode is set on connection."""
         from app.core.db import engine
-        async with engine.connect() as conn:
-            result = await conn.execute(text("PRAGMA journal_mode"))
-            mode = result.scalar()
-            # In-memory DBs return 'memory', file-based return 'wal'
-            assert mode in ("wal", "memory")
+        try:
+            async with engine.connect() as conn:
+                result = await conn.execute(text("PRAGMA journal_mode"))
+                mode = result.scalar()
+                # In-memory DBs return 'memory', file-based return 'wal'
+                assert mode in ("wal", "memory")
+        finally:
+            await engine.dispose()
 
     @pytest.mark.asyncio
     async def test_foreign_keys_enabled(self):
         """Verify foreign keys are enforced."""
         from app.core.db import engine
-        async with engine.connect() as conn:
-            result = await conn.execute(text("PRAGMA foreign_keys"))
-            fk = result.scalar()
-            assert fk in (1, True)
+        try:
+            async with engine.connect() as conn:
+                result = await conn.execute(text("PRAGMA foreign_keys"))
+                fk = result.scalar()
+                assert fk in (1, True)
+        finally:
+            await engine.dispose()
 
     def test_models_have_correct_types(self):
         """Verify model column types match expectations."""
