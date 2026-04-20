@@ -39,6 +39,9 @@ from app.core.broker import (
     get_recipe_by_name,
     get_running_task,
     get_task_by_id,
+    install_all_gallery_recipes,
+    install_gallery_category,
+    install_gallery_recipe,
     list_chains,
     list_recipes,
     match_recipe,
@@ -91,16 +94,28 @@ def _chat_id(update: Update) -> int:
 
 
 async def _load_prefs(chat_id: int) -> None:
-    """Load persisted prefs into cache if not already loaded."""
-    if chat_id in _chat_project_dir or chat_id in _chat_agent or chat_id in _chat_model:
-        return  # already in cache
+    """Load persisted prefs into cache if not already fetched from DB.
+
+    Tracked by a ``_loaded`` set so we hit the DB exactly once per
+    chat_id per process lifetime.  Values set by explicit commands
+    (``/agent``, ``/model``, ``/project``) are never overwritten.
+    """
+    _loaded: set | None = getattr(_load_prefs, "_loaded", None)  # type: ignore[attr-defined]
+    if _loaded is None:
+        _loaded = set()
+        _load_prefs._loaded = _loaded  # type: ignore[attr-defined]
+
+    if chat_id in _loaded:
+        return
+
     prefs = await get_chat_prefs(chat_id)
-    if prefs["project_dir"]:
+    if prefs["project_dir"] and chat_id not in _chat_project_dir:
         _chat_project_dir[chat_id] = prefs["project_dir"]
-    if prefs["agent"]:
+    if prefs["agent"] and chat_id not in _chat_agent:
         _chat_agent[chat_id] = prefs["agent"]
-    if prefs.get("model"):
+    if prefs.get("model") and chat_id not in _chat_model:
         _chat_model[chat_id] = prefs["model"]
+    _loaded.add(chat_id)
 
 
 def _project_dir(chat_id: int) -> str:
@@ -136,21 +151,26 @@ def _is_allowed_project_dir(path: str) -> bool:
     return False
 
 
-async def _send(update: Update, text: str, parse_mode: str | None = ParseMode.MARKDOWN) -> None:
+async def _send(update: Update, text: str, parse_mode: str | None = ParseMode.MARKDOWN, reply_markup=None) -> None:
     """Send a message, splitting at MAX_MSG_LEN if needed."""
     chat_id = _chat_id(update)
-    for i in range(0, len(text), MAX_MSG_LEN):
+    chunks = [text[i : i + MAX_MSG_LEN] for i in range(0, len(text), MAX_MSG_LEN)]
+    for idx, chunk in enumerate(chunks):
+        # Only attach reply_markup to the last chunk
+        markup = reply_markup if idx == len(chunks) - 1 else None
         try:
             await update.get_bot().send_message(
                 chat_id=chat_id,
-                text=text[i : i + MAX_MSG_LEN],
+                text=chunk,
                 parse_mode=parse_mode,
+                reply_markup=markup,
             )
         except Exception:
             # Fallback to plain text if markdown fails (e.g. unmatched backticks)
             await update.get_bot().send_message(
                 chat_id=chat_id,
-                text=text[i : i + MAX_MSG_LEN],
+                text=chunk,
+                reply_markup=markup,
             )
 
 
@@ -374,7 +394,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/addrecipe <name> triggers:kw1,kw2 [agent:name] [model:name]\n"
         "/recipes — list recipes\n"
         "/recipe <name> — show recipe details\n"
-        "/delrecipe <name> — delete a recipe\n\n"
+        "/delrecipe <name> — delete a recipe\n"
+        "/gallery — browse & install pre-made recipes\n\n"
         "*Queue management:*\n"
         "/bump <id> — move a task to front of queue\n"
         "/search <query> — search tasks by prompt text\n\n"
@@ -708,6 +729,7 @@ async def cmd_repeat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             repeat_until=repeat_until,
             project_dir=_project_dir(chat_id),
             agent=_agent(chat_id),
+            model=_model(chat_id) or None,
             chat_id=chat_id,
         )
     except ValueError as e:
@@ -751,12 +773,16 @@ async def cmd_savechain(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     chat_id = _chat_id(update)
     steps = []
+    current_model = _model(chat_id)
     for raw in raw_steps:
-        steps.append({
+        step = {
             "prompt": raw,
             "agent": _agent(chat_id),
             "project_dir": _project_dir(chat_id),
-        })
+        }
+        if current_model:
+            step["model"] = current_model
+        steps.append(step)
 
     try:
         chain = await save_chain(name=name, steps=steps, chat_id=chat_id)
@@ -1303,7 +1329,8 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             "/addrecipe <name> triggers:kw1,kw2 [agent:name] [model:name]\n"
             "/recipes — list recipes\n"
             "/recipe <name> — show recipe details\n"
-            "/delrecipe <name> — delete a recipe\n\n"
+            "/delrecipe <name> — delete a recipe\n"
+            "/gallery — browse & install pre-made recipes\n\n"
             "*Queue management:*\n"
             "/bump <id> — move a task to front of queue\n"
             "/search <query> — search tasks by prompt text\n\n"
@@ -1643,6 +1670,129 @@ async def cmd_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await _send(update, "\n".join(lines))
 
 
+# ── Gallery commands ────────────────────────────────────────────────
+
+@auth_required
+async def cmd_gallery(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Browse the recipe gallery: /gallery [category|all]"""
+    from app.core.gallery import GALLERY, get_gallery_by_category, get_gallery_categories, get_gallery_item
+
+    args = context.args or []
+
+    # /gallery install <name> — install a single recipe
+    if len(args) >= 2 and args[0] == "install":
+        name = args[1]
+        item = get_gallery_item(name)
+        if not item:
+            await _send(update, f"❓ '{name}' not found in gallery. Try /gallery to browse.")
+            return
+        chat_id = _chat_id(update)
+        recipe = await install_gallery_recipe(name, chat_id=chat_id)
+        if recipe:
+            await _send(update, f"✅ Installed recipe *{recipe.name}* ({item['description']})")
+        return
+
+    # /gallery install-all — install everything
+    if len(args) >= 1 and args[0] == "install-all":
+        chat_id = _chat_id(update)
+        installed = await install_all_gallery_recipes(chat_id=chat_id)
+        await _send(update, f"✅ Installed *{len(installed)}* recipes from the gallery.")
+        return
+
+    # /gallery install-category <cat> — install a category
+    if len(args) >= 2 and args[0] == "install-category":
+        cat_name = " ".join(args[1:])
+        items = get_gallery_by_category(cat_name)
+        if not items:
+            cats = get_gallery_categories()
+            await _send(update, f"❓ Category '{cat_name}' not found. Available: {', '.join(cats)}")
+            return
+        chat_id = _chat_id(update)
+        installed = await install_gallery_category(cat_name, chat_id=chat_id)
+        await _send(update, f"✅ Installed *{len(installed)}* recipes from _{cat_name}_.")
+        return
+
+    # /gallery <category> — show one category
+    if args:
+        cat_name = " ".join(args)
+        items = get_gallery_by_category(cat_name)
+        if not items:
+            cats = get_gallery_categories()
+            await _send(update, f"❓ Category '{cat_name}' not found. Available: {', '.join(cats)}")
+            return
+        lines = [f"📦 *{cat_name}* recipes:"]
+        for item in items:
+            lines.append(f"  • *{item['name']}* — {item['description']}")
+        lines.append(f"\n/gallery install-category {cat_name}")
+        lines.append("Or: /gallery install <name>")
+        await _send(update, "\n".join(lines))
+        return
+
+    # /gallery — show all categories with inline install buttons
+    categories = get_gallery_categories()
+    lines = ["🏪 *Recipe Gallery*\n"]
+    for cat in categories:
+        items = get_gallery_by_category(cat)
+        lines.append(f"*{cat}* ({len(items)} recipes):")
+        for item in items:
+            lines.append(f"  • `{item['name']}` — {item['description']}")
+        lines.append("")
+
+    lines.append("*Install:*")
+    lines.append("/gallery install <name> — install one")
+    lines.append("/gallery install-category <category> — install a category")
+    lines.append("/gallery install-all — install all recipes")
+
+    # Add inline buttons for quick category install
+    buttons = []
+    for cat in categories:
+        items = get_gallery_by_category(cat)
+        buttons.append(
+            [InlineKeyboardButton(
+                f"📥 Install {cat} ({len(items)})",
+                callback_data=f"gallerycat:{cat}",
+            )]
+        )
+    buttons.append(
+        [InlineKeyboardButton(
+            f"📥 Install All ({len(GALLERY)})",
+            callback_data="galleryall:",
+        )]
+    )
+
+    await _send(update, "\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons))
+
+
+@auth_required
+async def handle_gallery_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle gallery install callbacks."""
+    query = update.callback_query
+    await query.answer()  # type: ignore[union-attr]
+
+    data = query.data or ""  # type: ignore[union-attr]
+    chat_id = query.message.chat_id  # type: ignore[union-attr]
+
+    if data.startswith("gallerycat:"):
+        cat_name = data.split(":", 1)[1]
+        installed = await install_gallery_category(cat_name, chat_id=chat_id)
+        if installed:
+            await query.edit_message_text(  # type: ignore[union-attr]
+                f"✅ Installed *{len(installed)}* recipes from _{cat_name}_.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        else:
+            await query.edit_message_text(  # type: ignore[union-attr]
+                f"❓ Category '{cat_name}' not found.",
+            )
+
+    elif data.startswith("galleryall:"):
+        installed = await install_all_gallery_recipes(chat_id=chat_id)
+        await query.edit_message_text(  # type: ignore[union-attr]
+            f"✅ Installed *{len(installed)}* recipes from the gallery.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+
 @auth_required
 async def handle_recipe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle recipe confirmation/skip callback from auto-match."""
@@ -1775,6 +1925,7 @@ def build_app(runner=None) -> Application:
     app.add_handler(CommandHandler("addrecipe", cmd_addrecipe))
     app.add_handler(CommandHandler("delrecipe", cmd_delrecipe))
     app.add_handler(CommandHandler("recipe", cmd_recipe))
+    app.add_handler(CommandHandler("gallery", cmd_gallery))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(handle_agent_callback, pattern=r"^switch:"))
     app.add_handler(CallbackQueryHandler(handle_model_set_callback, pattern=r"^modelset:"))
@@ -1784,5 +1935,6 @@ def build_app(runner=None) -> Application:
     app.add_handler(CallbackQueryHandler(handle_setagent_callback, pattern=r"^setagent:"))
     app.add_handler(CallbackQueryHandler(handle_task_action_callback, pattern=r"^task(retry|output|followup):"))
     app.add_handler(CallbackQueryHandler(handle_recipe_callback, pattern=r"^recipe(use|skip):"))
+    app.add_handler(CallbackQueryHandler(handle_gallery_callback, pattern=r"^gallery(cat|all):"))
 
     return app

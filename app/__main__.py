@@ -39,12 +39,13 @@ async def _run() -> None:
         logger.info("Purged %d old tasks", purged)
 
     runner = AgentRunner()
-    from app.core.broker import set_runner_wake
+    from app.core.broker import set_runner_wake, set_worker_complete_callback
     set_runner_wake(runner.notify_new_task)
 
     app = build_app(runner=runner)
     notify = await make_notify_callback(app)
     runner._on_complete = notify
+    set_worker_complete_callback(notify)  # same Telegram notify for worker-completed tasks
     chain_notify = await make_chain_notify_callback(app)
     runner._chain_notify = chain_notify
     progress_notify = await make_progress_callback(app)

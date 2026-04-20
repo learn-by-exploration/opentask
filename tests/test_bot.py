@@ -17,8 +17,10 @@ from app.telegram.bot import (
     MAX_MSG_LEN,
     _chat_agent,
     _chat_followup,
+    _chat_model,
     _chat_project_dir,
     _is_allowed_project_dir,
+    _load_prefs,
     _status_emoji,
     auth_required,
     cmd_agent,
@@ -114,10 +116,16 @@ def _clear_caches():
     _chat_project_dir.clear()
     _chat_agent.clear()
     _chat_followup.clear()
+    _chat_model.clear()
+    if hasattr(_load_prefs, "_loaded"):
+        _load_prefs._loaded.clear()
     yield
     _chat_project_dir.clear()
     _chat_agent.clear()
     _chat_followup.clear()
+    _chat_model.clear()
+    if hasattr(_load_prefs, "_loaded"):
+        _load_prefs._loaded.clear()
 
 
 # ── Auth decorator ───────────────────────────────────────────────────
@@ -635,9 +643,12 @@ class TestLoadPrefs:
 
     @patch("app.telegram.bot.get_chat_prefs", new_callable=AsyncMock)
     async def test_skips_db_when_cached(self, mock_prefs):
-        _chat_project_dir[88888] = "/cached"
+        """Second _load_prefs call for the same chat_id skips the DB."""
+        mock_prefs.return_value = {"project_dir": "/home/test/proj", "agent": "aider"}
         from app.telegram.bot import _load_prefs
-        await _load_prefs(88888)
+        await _load_prefs(88888)        # first call → hits DB
+        mock_prefs.reset_mock()
+        await _load_prefs(88888)        # second call → should skip
         mock_prefs.assert_not_called()
 
     @patch("app.telegram.bot.get_chat_prefs", new_callable=AsyncMock)
@@ -647,6 +658,19 @@ class TestLoadPrefs:
         await _load_prefs(66666)
         assert 66666 not in _chat_project_dir
         assert 66666 not in _chat_agent
+
+    @patch("app.telegram.bot.get_chat_prefs", new_callable=AsyncMock)
+    async def test_partial_cache_still_loads_missing(self, mock_prefs):
+        """If /agent was called first, _load_prefs must still load model from DB."""
+        mock_prefs.return_value = {"project_dir": "/db/proj", "agent": "aider", "model": "o4-mini"}
+        _chat_agent[55555] = "claude"          # manual /agent command
+        from app.telegram.bot import _load_prefs
+        await _load_prefs(55555)
+        # DB values loaded for fields NOT already in cache:
+        assert _chat_project_dir[55555] == "/db/proj"
+        assert _chat_model[55555] == "o4-mini"
+        # agent was NOT overwritten by DB value:
+        assert _chat_agent[55555] == "claude"
 
 
 # ── make_notify_callback ────────────────────────────────────────────

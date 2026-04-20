@@ -16,15 +16,16 @@ python -m app          # or: make run
 ```
 app/
   config/settings.py    — Pydantic settings from .env (Settings class)
-  core/models.py        — Task, TaskChain, ChatPrefs (SQLAlchemy ORM)
+  core/models.py        — Task, TaskChain, ChatPrefs, Recipe (SQLAlchemy ORM)
   core/db.py            — Async engine + session factory (aiosqlite)
-  core/broker.py        — Queue CRUD, chains, prefs, recovery, purge, worker functions
+  core/broker.py        — Queue CRUD, chains, prefs, recovery, purge, worker, recipe, gallery functions
+  core/gallery.py       — Pre-made recipe gallery (Synclyf, AI Powerhouse, Dev Workflows)
   core/runner.py        — AgentRunner: subprocess execution with timeout + shell escaping
-  telegram/bot.py       — Telegram bot: auth, commands, chains, repeats, notifications
+  telegram/bot.py       — Telegram bot: auth, commands, chains, repeats, recipes, gallery, notifications
   web/dashboard.py      — FastAPI web dashboard (HTML + JSON API + Worker API)
   __main__.py           — Entry point: init_db → recover → purge → bot + runner + dashboard
 worker.py               — Standalone remote worker client (zero external deps)
-tests/                  — 942+ tests across 20 files
+tests/                  — 1537+ tests across 22+ files
   conftest.py           — In-memory SQLite fixtures
   test_broker.py        — Core broker operations
   test_runner.py        — Command building + summarization
@@ -72,6 +73,9 @@ Remote machines can claim and execute tasks via the Worker API:
 - Runner wake callback: new tasks wake the runner immediately (no poll delay)
 - Progress notifications: periodic updates while long tasks run
 - Dashboard: embedded HTML (no template deps), JSON API for programmatic access
+- Recipes: named routing rules with trigger keywords, agent/model/project overrides, prompt prefix/suffix, setup commands, skills
+- Recipe gallery: pre-made templates in `app/core/gallery.py` organized by category (Synclyf, AI Powerhouse, Dev Workflows)
+- `/gallery` command with inline buttons for one-tap install of individual recipes, categories, or the entire gallery
 
 ## Key Design Decisions (Workers)
 

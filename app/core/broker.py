@@ -24,16 +24,28 @@ _TASK_SUMMARY_COLUMNS = (
     Task.repeat_total, Task.repeat_remaining, Task.repeat_until,
     Task.assigned_to, Task.worker_id, Task.heartbeat_at,
     Task.priority, Task.retry_count, Task.max_retries, Task.git_diff,
+    Task.model,
     Task.created_at, Task.started_at, Task.completed_at, Task.duration_seconds,
 )
 
 _runner_wake: Callable[[], None] | None = None
+_on_worker_complete: Callable[[Task], Any] | None = None
 
 
 def set_runner_wake(fn: Callable[[], None] | None) -> None:
     """Register a callback to wake the runner when a new task is enqueued."""
     global _runner_wake
     _runner_wake = fn
+
+
+def set_worker_complete_callback(fn: Callable[[Task], Any] | None) -> None:
+    """Register a callback for when a remote worker completes a task.
+
+    This mirrors the runner's _after_complete — it triggers Telegram
+    notifications, chain advancement, repeat re-enqueue, and auto-retry.
+    """
+    global _on_worker_complete
+    _on_worker_complete = fn
 
 
 async def enqueue_task(
@@ -289,7 +301,58 @@ async def worker_submit_result(
         task = fetch.scalar_one_or_none()
         if task and task.started_at:
             task.duration_seconds = int((now - task.started_at).total_seconds())
-        return task
+
+    # Post-completion: trigger the same logic the local runner uses
+    if task is not None:
+        await _handle_worker_post_completion(task)
+
+    return task
+
+
+async def _handle_worker_post_completion(task: Task) -> None:
+    """Run post-completion logic for worker-submitted tasks.
+
+    Mirrors the runner's _after_complete: auto-retry, notify, repeat, chain.
+    """
+    # Auto-retry transient failures
+    if task.status == TaskStatus.FAILED:
+        retried = await auto_retry_task(task.id)
+        if retried:
+            logger.info(
+                "Worker auto-retry: task #%d → re-enqueued as #%d",
+                task.id, retried.id,
+            )
+            if _on_worker_complete:
+                try:
+                    await _on_worker_complete(task)
+                except Exception:
+                    logger.exception("Worker notify failed for task #%d", task.id)
+            return
+
+    # Notify via Telegram
+    if _on_worker_complete:
+        try:
+            await _on_worker_complete(task)
+        except Exception:
+            logger.exception("Worker notify failed for task #%d", task.id)
+
+    # Repeat re-enqueue
+    requeued = await maybe_reenqueue(task)
+    if requeued:
+        logger.info("Worker repeat: task #%d → re-enqueued as #%d", task.id, requeued.id)
+        return
+
+    # Chain advancement
+    if task.chain_id is not None:
+        try:
+            next_task = await advance_chain(task)
+            if next_task:
+                logger.info(
+                    "Worker chain: task #%d → next step #%d",
+                    task.id, next_task.id,
+                )
+        except Exception:
+            logger.exception("Worker advance_chain failed for task #%d", task.id)
 
 
 async def worker_heartbeat(task_id: int, worker_id: str) -> bool:
@@ -467,6 +530,7 @@ async def retry_task(task_id: int) -> Task | None:
             prompt=source.prompt,
             project_dir=source.project_dir,
             agent=source.agent,
+            model=source.model,
             status=TaskStatus.PENDING,
             telegram_chat_id=source.telegram_chat_id,
         )
@@ -568,6 +632,7 @@ async def enqueue_repeat_task(
     repeat_until: datetime | None = None,
     project_dir: str | None = None,
     agent: str | None = None,
+    model: str | None = None,
     chat_id: int | None = None,
     msg_id: int | None = None,
 ) -> Task:
@@ -604,6 +669,7 @@ async def enqueue_repeat_task(
             prompt=prompt,
             project_dir=project_dir or settings.default_project_dir,
             agent=agent or settings.default_agent,
+            model=model or settings.default_model or None,
             status=TaskStatus.PENDING,
             telegram_chat_id=chat_id,
             telegram_msg_id=msg_id,
@@ -663,6 +729,7 @@ async def maybe_reenqueue(task: Task) -> Task | None:
             prompt=task.prompt,
             project_dir=task.project_dir,
             agent=task.agent,
+            model=task.model,
             status=TaskStatus.PENDING,
             telegram_chat_id=task.telegram_chat_id,
             repeat_total=task.repeat_total,
@@ -795,6 +862,7 @@ async def start_chain(name: str, chat_id: int | None = None) -> Task | None:
             prompt=step["prompt"],
             project_dir=step.get("project_dir") or settings.default_project_dir,
             agent=step.get("agent") or settings.default_agent,
+            model=step.get("model") or None,
             status=TaskStatus.PENDING,
             telegram_chat_id=chain.telegram_chat_id,
             chain_id=chain.id,
@@ -863,6 +931,7 @@ async def advance_chain(task: Task) -> Task | None:
             prompt=step["prompt"],
             project_dir=step.get("project_dir") or settings.default_project_dir,
             agent=step.get("agent") or settings.default_agent,
+            model=step.get("model") or None,
             status=TaskStatus.PENDING,
             telegram_chat_id=chain.telegram_chat_id,
             chain_id=chain.id,
@@ -1208,3 +1277,46 @@ async def _apply_recipe_to_task(
         await session.flush()
         await session.refresh(task)
         return task
+
+
+async def install_gallery_recipe(name: str, chat_id: int | None = None) -> Recipe | None:
+    """Install a single recipe from the gallery. Returns the Recipe or None if not found."""
+    from app.core.gallery import get_gallery_item
+
+    item = get_gallery_item(name)
+    if item is None:
+        return None
+
+    kwargs = dict(item["recipe"])
+    kwargs["name"] = name
+    kwargs["chat_id"] = chat_id
+    return await save_recipe(**kwargs)
+
+
+async def install_gallery_category(category: str, chat_id: int | None = None) -> list[Recipe]:
+    """Install all recipes from a gallery category. Returns installed recipes."""
+    from app.core.gallery import get_gallery_by_category
+
+    items = get_gallery_by_category(category)
+    installed: list[Recipe] = []
+    for item in items:
+        kwargs = dict(item["recipe"])
+        kwargs["name"] = item["name"]
+        kwargs["chat_id"] = chat_id
+        recipe = await save_recipe(**kwargs)
+        installed.append(recipe)
+    return installed
+
+
+async def install_all_gallery_recipes(chat_id: int | None = None) -> list[Recipe]:
+    """Install every recipe from the gallery. Returns all installed recipes."""
+    from app.core.gallery import GALLERY
+
+    installed: list[Recipe] = []
+    for item in GALLERY:
+        kwargs = dict(item["recipe"])
+        kwargs["name"] = item["name"]
+        kwargs["chat_id"] = chat_id
+        recipe = await save_recipe(**kwargs)
+        installed.append(recipe)
+    return installed
