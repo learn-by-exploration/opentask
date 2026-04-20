@@ -15,11 +15,12 @@ env/
 # Environment
 .env
 
-# Database
-# data/
-# *.db
-# *.sqlite
-# *.sqlite3
+# Database / runtime data
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/*.db-journal
+data/*.log
 
 # IDE
 .vscode/

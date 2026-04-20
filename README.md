@@ -50,7 +50,7 @@ No SSH tunnels, no port forwarding, no VPN. Just Telegram long-polling.
 - **Auto-purge** — old completed tasks cleaned up after 7 days
 - **Progress notifications** — periodic updates while tasks run
 - **Path allowlist** — restrict agent execution to approved directories
-- **871 tests** across 19 test files covering broker, runner, bot, chains, security, and dashboard
+- **879 tests** across 19 test files covering broker, runner, bot, chains, security, and dashboard
 
 ## Key Design Decisions
 
@@ -104,19 +104,59 @@ No SSH tunnels, no port forwarding, no VPN. Just Telegram long-polling.
 git clone git@github.com:learn-by-exploration/opentask.git
 cd opentask
 
-# 2. Install
-pip install -e .
-# Optional: pip install -e ".[web]" for the web dashboard
-# Optional: pip install -e ".[dev]" for test dependencies
+# 2. One-command setup (creates venv, installs deps, runs tests)
+bash setup.sh
 
 # 3. Configure
-cp .env.example .env
-# Edit .env — add your Telegram bot token and user ID
+#    Edit .env — add your Telegram bot token and user ID
+#    (setup.sh creates .env from the template if it doesn't exist)
 
 # 4. Run
-taskpilot
-# Or: python -m app
+source .venv/bin/activate
+python -m app
+# Or: make run
 ```
+
+### Alternative: Manual Setup
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+cp .env.example .env   # edit with your config
+python -m app
+```
+
+### Running in Background
+
+```bash
+make run-bg          # start in background (logs → data/bot.log)
+make logs            # tail the log
+make stop            # stop the bot
+make restart         # stop + start
+```
+
+### Makefile Commands
+
+| Command | Description |
+|---------|-------------|
+| `make setup` | Full setup via setup.sh |
+| `make install` | Install all dependencies into .venv |
+| `make run` | Run in foreground |
+| `make run-bg` | Run in background (logs → data/bot.log) |
+| `make stop` | Stop background process |
+| `make restart` | Stop + start in background |
+| `make logs` | Tail the bot log |
+| `make test` | Run all tests (verbose) |
+| `make test-quick` | Quick test (stop on first failure) |
+| `make clean` | Remove caches and build artifacts |
+
+### Prerequisites
+
+- **Python 3.9+** — `python3 --version`
+- **An AI coding agent** — at least one of:
+  - [OpenCode](https://github.com/opencode-ai/opencode) — `opencode run` (default)
+  - [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) — `claude -p`
+- **Telegram account** — for the bot interface
 
 ### Getting a Telegram Bot Token
 
@@ -132,7 +172,7 @@ taskpilot
 
 ## Web Dashboard
 
-When installed with `pip install -e ".[web]"`, a web dashboard runs alongside the bot at `http://127.0.0.1:8095`:
+The web dashboard runs alongside the bot at `http://127.0.0.1:8095`:
 
 - **Stats overview** — queue depth, completed/failed counts, average duration
 - **Running task** — highlighted card with elapsed time
@@ -180,7 +220,7 @@ opentask/
 │   │   └── bot.py             # Commands, auth, notifications
 │   └── web/
 │       └── dashboard.py       # FastAPI dashboard (HTML + JSON API)
-├── tests/                     # 871 tests across 19 files
+├── tests/                     # 879 tests across 19 files
 │   ├── conftest.py            # In-memory SQLite fixtures
 │   ├── test_broker.py         # Core broker operations
 │   ├── test_runner.py         # Command building + summarization
@@ -204,8 +244,10 @@ opentask/
 ## Running Tests
 
 ```bash
-pip install -e ".[dev]"
-pytest tests/ -v
+source .venv/bin/activate
+make test              # verbose
+make test-quick        # stop on first failure
+# Or directly: pytest tests/ -v
 ```
 
 ## License

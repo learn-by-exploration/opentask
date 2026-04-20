@@ -1,13 +1,14 @@
 # OpenTask
 
-Personal Telegram → AI agent bridge. Queue coding tasks from your phone, execute them via OpenCode/Aider on your dev machine.
+Personal Telegram → AI agent bridge. Queue coding tasks from your phone, execute them via OpenCode/Claude on your dev machine.
 
 ## Quick Start
 
 ```bash
-pip install -e ".[dev]"
-cp .env.example .env  # fill in TELEGRAM_BOT_TOKEN + ALLOWED_USER_IDS
-taskpilot              # or: python -m app
+bash setup.sh          # creates venv, installs deps, runs tests
+# edit .env with your Telegram bot token + user ID
+source .venv/bin/activate
+python -m app          # or: make run
 ```
 
 ## Project Layout
@@ -22,7 +23,7 @@ app/
   telegram/bot.py       — Telegram bot: auth, commands, chains, repeats, notifications
   web/dashboard.py      — FastAPI web dashboard (HTML + JSON API)
   __main__.py           — Entry point: init_db → recover → purge → bot + runner + dashboard
-tests/                  — 871 tests across 19 files
+tests/                  — 879 tests across 19 files
   conftest.py           — In-memory SQLite fixtures
   test_broker.py        — Core broker operations
   test_runner.py        — Command building + summarization
@@ -63,8 +64,8 @@ tests/                  — 871 tests across 19 files
 ## Running Tests
 
 ```bash
-pip install -e ".[dev]"
-pytest tests/ -v
+source .venv/bin/activate
+make test              # or: pytest tests/ -v
 ```
 
 ## Environment Variables

@@ -3,15 +3,20 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "taskpilot"
+name = "opentask"
 version = "0.1.0"
-description = "Personal remote AI agent control via Telegram"
+description = "Personal Telegram → AI agent bridge. Queue coding tasks from your phone, execute via AI agents on your dev machine."
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.9"
 dependencies = [
     "python-telegram-bot[ext]>=21.0",
     "sqlalchemy[asyncio]>=2.0",
     "aiosqlite>=0.19",
     "pydantic-settings>=2.0",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "jinja2>=3.1",
 ]
 
 [project.optional-dependencies]
@@ -19,14 +24,9 @@ dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.23,<1.0",
 ]
-web = [
-    "fastapi>=0.110",
-    "uvicorn[standard]>=0.27",
-    "jinja2>=3.1",
-]
 
 [project.scripts]
-taskpilot = "app.__main__:main"
+opentask = "app.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["app*"]
