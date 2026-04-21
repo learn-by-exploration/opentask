@@ -111,7 +111,11 @@ class Task(Base):
 
     # ── Model fallback tracking ─────────────────────────────────────
     fallback_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # ── Per-task timeout override ────────────────────────────────────────
+    timeout_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
+    # ── Cost tracking ────────────────────────────────────────────────────
+    estimated_cost: Mapped[Optional[float]] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utcnow
     )
@@ -173,3 +177,36 @@ class Recipe(Base):
             return json.loads(self.skills_json)
         except (json.JSONDecodeError, TypeError):
             return []
+
+
+class TaskTemplate(Base):
+    """A reusable task template — save/recall common task configurations."""
+    __tablename__ = "task_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    agent: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    model: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    project_dir: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    timeout_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    telegram_chat_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+class ScheduledTask(Base):
+    """A scheduled/recurring task with cron-like expression."""
+    __tablename__ = "scheduled_tasks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    cron_expr: Mapped[str] = mapped_column(String(128), nullable=False)  # e.g. "0 9 * * *"
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    agent: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    model: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    project_dir: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
+    last_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    next_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    telegram_chat_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)

@@ -306,7 +306,7 @@ async def test_advance_chain_to_next_step(broker_session):
 
     next_task = await advance_chain(completed)
     assert next_task is not None
-    assert next_task.prompt == "step2"
+    assert "step2" in next_task.prompt  # may have context prefix from memory carry
     assert next_task.chain_step == 1
 
 
@@ -371,7 +371,7 @@ async def test_advance_chain_full_run(broker_session):
     for i, expected_prompt in enumerate(["s1", "s2", "s3"]):
         picked = await pick_next_task()
         assert picked is not None, f"Step {i} should have a pending task"
-        assert picked.prompt == expected_prompt
+        assert expected_prompt in picked.prompt  # may have context prefix from memory carry
         completed = await complete_task(picked.id, 0, "ok", "output")
         next_task = await advance_chain(completed)
 

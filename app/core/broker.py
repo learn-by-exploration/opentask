@@ -12,7 +12,8 @@ from sqlalchemy.orm import load_only
 
 from app.config.settings import settings
 from app.core.db import get_session
-from app.core.models import ChatPrefs, ChainStatus, Recipe, Task, TaskChain, TaskStatus, _utcnow
+from app.core.costs import estimate_cost
+from app.core.models import ChatPrefs, ChainStatus, Recipe, ScheduledTask, Task, TaskChain, TaskStatus, TaskTemplate, _utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,7 @@ async def enqueue_task(
     msg_id: int | None = None,
     model: str | None = None,
     assigned_to: str | None = None,
+    timeout_seconds: int | None = None,
 ) -> Task:
     """Add a new task to the queue. Raises ValueError if the queue is full.
 
@@ -74,12 +76,31 @@ async def enqueue_task(
                 f"Queue full ({active_count}/{settings.max_queue_size})"
             )
 
+        # Daily cost budget check
+        if settings.cost_budget_daily > 0:
+            today_start = _utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            cost_result = await session.execute(
+                select(func.sum(Task.estimated_cost)).where(
+                    Task.created_at >= today_start
+                )
+            )
+            today_cost = cost_result.scalar() or 0.0
+            if today_cost >= settings.cost_budget_daily:
+                raise ValueError(
+                    f"Daily budget exceeded (${today_cost:.2f}/${settings.cost_budget_daily:.2f})"
+                )
+
         task = Task(
             prompt=prompt,
             project_dir=project_dir or settings.default_project_dir,
             agent=agent or settings.default_agent,
-            model=model or settings.default_model or None,
+            model=settings.resolve_model(model or settings.default_model) or None,
             assigned_to=assigned_to,
+            timeout_seconds=timeout_seconds,
+            estimated_cost=estimate_cost(
+                settings.resolve_model(model or settings.default_model) or None,
+                prompt,
+            ),
             status=TaskStatus.PENDING,
             telegram_chat_id=chat_id,
             telegram_msg_id=msg_id,
@@ -118,7 +139,7 @@ async def switch_task_model(task_id: int, new_model: str) -> Task | None:
         task = result.scalar_one_or_none()
         if task is None:
             return None
-        task.model = new_model if new_model else None
+        task.model = settings.resolve_model(new_model) if new_model else None
         await session.flush()
         await session.refresh(task)
         return task
@@ -171,8 +192,18 @@ async def enqueue_followup(
                 f"Queue full ({active_count}/{settings.max_queue_size})"
             )
 
+        # Inject parent's output as context for memory carry-over
+        context_prompt = prompt
+        if parent.output_summary:
+            context_prefix = (
+                f"[Context from previous task #{parent.id}]\n"
+                f"{parent.output_summary[:1000]}\n"
+                f"[End context]\n\n"
+            )
+            context_prompt = context_prefix + prompt
+
         task = Task(
-            prompt=prompt,
+            prompt=context_prompt,
             project_dir=parent.project_dir,
             agent=parent.agent,
             model=parent.model,
@@ -927,8 +958,18 @@ async def advance_chain(task: Task) -> Task | None:
             return None
 
         step = steps[next_idx]
+        # Inject previous step's output as context for memory carry-over
+        step_prompt = step["prompt"]
+        if task.output_summary:
+            context_prefix = (
+                f"[Context from chain step {task.chain_step or 0}]\n"
+                f"{task.output_summary[:1000]}\n"
+                f"[End context]\n\n"
+            )
+            step_prompt = context_prefix + step_prompt
+
         next_task = Task(
-            prompt=step["prompt"],
+            prompt=step_prompt,
             project_dir=step.get("project_dir") or settings.default_project_dir,
             agent=step.get("agent") or settings.default_agent,
             model=step.get("model") or None,
@@ -1405,3 +1446,225 @@ async def install_all_gallery_recipes(chat_id: int | None = None) -> list[Recipe
         recipe = await save_recipe(**kwargs)
         installed.append(recipe)
     return installed
+
+
+# ── Task Templates ───────────────────────────────────────────────────
+
+
+async def save_template(
+    name: str,
+    prompt: str,
+    agent: str | None = None,
+    model: str | None = None,
+    project_dir: str | None = None,
+    timeout_seconds: int | None = None,
+    chat_id: int | None = None,
+) -> TaskTemplate:
+    """Create or update a task template."""
+    session = await get_session()
+    async with session, session.begin():
+        result = await session.execute(
+            select(TaskTemplate).where(TaskTemplate.name == name)
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            existing.prompt = prompt
+            existing.agent = agent
+            existing.model = model
+            existing.project_dir = project_dir
+            existing.timeout_seconds = timeout_seconds
+            existing.telegram_chat_id = chat_id
+            await session.flush()
+            await session.refresh(existing)
+            return existing
+        tmpl = TaskTemplate(
+            name=name, prompt=prompt, agent=agent, model=model,
+            project_dir=project_dir, timeout_seconds=timeout_seconds,
+            telegram_chat_id=chat_id,
+        )
+        session.add(tmpl)
+        await session.flush()
+        await session.refresh(tmpl)
+        return tmpl
+
+
+async def get_template(name: str) -> TaskTemplate | None:
+    """Get a template by name."""
+    session = await get_session()
+    async with session:
+        result = await session.execute(
+            select(TaskTemplate).where(TaskTemplate.name == name)
+        )
+        return result.scalar_one_or_none()
+
+
+async def list_templates() -> list[TaskTemplate]:
+    """List all task templates."""
+    session = await get_session()
+    async with session:
+        result = await session.execute(
+            select(TaskTemplate).order_by(TaskTemplate.name)
+        )
+        return list(result.scalars().all())
+
+
+async def delete_template(name: str) -> bool:
+    """Delete a template by name. Returns True if deleted."""
+    session = await get_session()
+    async with session, session.begin():
+        result = await session.execute(
+            sa_delete(TaskTemplate).where(TaskTemplate.name == name)
+        )
+        return result.rowcount > 0
+
+
+# ── Scheduled Tasks ──────────────────────────────────────────────────
+
+
+async def save_schedule(
+    name: str,
+    cron_expr: str,
+    prompt: str,
+    agent: str | None = None,
+    model: str | None = None,
+    project_dir: str | None = None,
+    chat_id: int | None = None,
+) -> ScheduledTask:
+    """Create or update a scheduled task."""
+    session = await get_session()
+    async with session, session.begin():
+        result = await session.execute(
+            select(ScheduledTask).where(ScheduledTask.name == name)
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            existing.cron_expr = cron_expr
+            existing.prompt = prompt
+            existing.agent = agent
+            existing.model = model
+            existing.project_dir = project_dir
+            existing.telegram_chat_id = chat_id
+            existing.next_run_at = _compute_next_run(cron_expr)
+            await session.flush()
+            await session.refresh(existing)
+            return existing
+        sched = ScheduledTask(
+            name=name, cron_expr=cron_expr, prompt=prompt,
+            agent=agent, model=model, project_dir=project_dir,
+            enabled=True, telegram_chat_id=chat_id,
+            next_run_at=_compute_next_run(cron_expr),
+        )
+        session.add(sched)
+        await session.flush()
+        await session.refresh(sched)
+        return sched
+
+
+async def list_schedules() -> list[ScheduledTask]:
+    """List all scheduled tasks."""
+    session = await get_session()
+    async with session:
+        result = await session.execute(
+            select(ScheduledTask).order_by(ScheduledTask.name)
+        )
+        return list(result.scalars().all())
+
+
+async def delete_schedule(name: str) -> bool:
+    """Delete a schedule by name. Returns True if deleted."""
+    session = await get_session()
+    async with session, session.begin():
+        result = await session.execute(
+            sa_delete(ScheduledTask).where(ScheduledTask.name == name)
+        )
+        return result.rowcount > 0
+
+
+async def toggle_schedule(name: str) -> ScheduledTask | None:
+    """Toggle enabled state of a schedule."""
+    session = await get_session()
+    async with session, session.begin():
+        result = await session.execute(
+            select(ScheduledTask).where(ScheduledTask.name == name)
+        )
+        sched = result.scalar_one_or_none()
+        if sched is None:
+            return None
+        sched.enabled = not sched.enabled
+        if sched.enabled:
+            sched.next_run_at = _compute_next_run(sched.cron_expr)
+        await session.flush()
+        await session.refresh(sched)
+        return sched
+
+
+async def get_due_schedules() -> list[ScheduledTask]:
+    """Get all enabled schedules that are due to run."""
+    now = _utcnow()
+    session = await get_session()
+    async with session:
+        result = await session.execute(
+            select(ScheduledTask).where(
+                ScheduledTask.enabled == True,  # noqa: E712
+                ScheduledTask.next_run_at <= now,
+            )
+        )
+        return list(result.scalars().all())
+
+
+async def mark_schedule_run(schedule_id: int) -> None:
+    """Mark a schedule as just run and compute next run time."""
+    session = await get_session()
+    async with session, session.begin():
+        result = await session.execute(
+            select(ScheduledTask).where(ScheduledTask.id == schedule_id)
+        )
+        sched = result.scalar_one_or_none()
+        if sched:
+            sched.last_run_at = _utcnow()
+            sched.next_run_at = _compute_next_run(sched.cron_expr)
+
+
+def _compute_next_run(cron_expr: str) -> datetime:
+    """Compute the next run time from a simple cron expression.
+
+    Supports: "HH:MM" (daily), "*/N" (every N minutes), or full 5-field cron.
+    Falls back to 1 hour from now on parse errors.
+    """
+    from datetime import timedelta
+    now = _utcnow()
+
+    # Simple "HH:MM" daily schedule
+    if ":" in cron_expr and len(cron_expr) <= 5:
+        try:
+            hour, minute = map(int, cron_expr.split(":"))
+            candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if candidate <= now:
+                candidate += timedelta(days=1)
+            return candidate
+        except (ValueError, TypeError):
+            pass
+
+    # "*/N" — every N minutes
+    if cron_expr.startswith("*/"):
+        try:
+            interval_min = int(cron_expr[2:])
+            return now + timedelta(minutes=max(interval_min, 1))
+        except (ValueError, TypeError):
+            pass
+
+    # 5-field cron: parse minute and hour fields only (simple subset)
+    parts = cron_expr.split()
+    if len(parts) >= 5:
+        try:
+            minute = int(parts[0]) if parts[0] != "*" else 0
+            hour = int(parts[1]) if parts[1] != "*" else now.hour
+            candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if candidate <= now:
+                candidate += timedelta(days=1)
+            return candidate
+        except (ValueError, TypeError):
+            pass
+
+    # Fallback: 1 hour from now
+    return now + timedelta(hours=1)

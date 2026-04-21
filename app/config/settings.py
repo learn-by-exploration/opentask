@@ -28,6 +28,16 @@ class Settings(BaseSettings):
 
     default_model: str = ""  # empty = use agent default; e.g. "sonnet" or "anthropic/claude-sonnet-4"
 
+    # Model aliases: short names → full model IDs
+    # JSON dict, e.g. {"sonnet": "anthropic/claude-sonnet-4", "gpt5": "openai/gpt-5.4"}
+    model_aliases: dict[str, str] = {
+        "sonnet": "anthropic/claude-sonnet-4",
+        "opus": "anthropic/claude-opus-4",
+        "haiku": "anthropic/claude-haiku-4",
+        "gpt5": "openai/gpt-5.4",
+        "gemini": "google/gemini-2.5-pro",
+    }
+
     # Ordered fallback models: when a task hits a rate limit, retry with the next model
     # Comma-separated, e.g. "claude-sonnet-4,gpt-5.4,gemini-2.5-pro"
     model_fallbacks: str = ""
@@ -45,6 +55,9 @@ class Settings(BaseSettings):
     max_prompt_len: int = 16000
     progress_interval_seconds: int = 30
 
+    # Cost budget: daily spending cap in USD (0 = unlimited)
+    cost_budget_daily: float = 0.0
+
     db_path: str = "./data/taskpilot.db"
     output_summary_max_chars: int = 500
 
@@ -59,6 +72,10 @@ class Settings(BaseSettings):
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = 8095
     dashboard_token: str = ""  # optional bearer token; empty = no auth
+
+    # Multi-channel webhook notifications (JSON list of webhook configs)
+    # Each entry: {"url": "https://...", "type": "discord"|"slack"|"generic", "name": "my-channel"}
+    notification_webhooks: str = ""  # JSON array or empty
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
@@ -85,6 +102,12 @@ class Settings(BaseSettings):
             return v
         return [m.strip() for m in v.split(",") if m.strip()]
 
+    def resolve_model(self, name: str) -> str:
+        """Resolve a model alias to its full ID, or return the name as-is."""
+        if not name:
+            return name
+        return self.model_aliases.get(name.lower(), name)
+
     @property
     def known_workers_list(self) -> list[str]:
         v = self.known_workers
@@ -102,6 +125,21 @@ class Settings(BaseSettings):
         if isinstance(v, list):
             return v
         return [d.strip() for d in v.split(",") if d.strip()]
+
+    @property
+    def webhook_configs(self) -> list[dict]:
+        """Parse NOTIFICATION_WEBHOOKS JSON string into list of webhook configs."""
+        import json as _json
+        v = self.notification_webhooks
+        if not v or not v.strip():
+            return []
+        try:
+            configs = _json.loads(v)
+            if isinstance(configs, list):
+                return [c for c in configs if isinstance(c, dict) and c.get("url")]
+            return []
+        except (_json.JSONDecodeError, TypeError):
+            return []
 
 
 settings = Settings()

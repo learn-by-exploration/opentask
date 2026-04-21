@@ -20,6 +20,33 @@ logging.basicConfig(
 logger = logging.getLogger("taskpilot")
 
 
+async def _run_scheduler() -> None:
+    """Check for and execute due scheduled tasks every 60 seconds."""
+    from app.core.broker import enqueue_task, get_due_schedules, mark_schedule_run
+
+    while True:
+        try:
+            await asyncio.sleep(60)
+            due = await get_due_schedules()
+            for sched in due:
+                try:
+                    await enqueue_task(
+                        prompt=sched.prompt,
+                        agent=sched.agent,
+                        model=sched.model,
+                        project_dir=sched.project_dir,
+                        chat_id=sched.telegram_chat_id,
+                    )
+                    await mark_schedule_run(sched.id)
+                    logger.info("Scheduled task '%s' enqueued", sched.name)
+                except Exception:
+                    logger.exception("Failed to enqueue scheduled task '%s'", sched.name)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("Scheduler error")
+
+
 async def _run() -> None:
     """Initialise DB, recover orphans, then run bot + runner."""
     await init_db()
@@ -87,6 +114,9 @@ async def _run() -> None:
 
     runner_task = asyncio.create_task(runner.start())
 
+    # Start cron scheduler
+    scheduler_task = asyncio.create_task(_run_scheduler())
+
     # Start web dashboard if enabled
     web_server = None
     web_task = None
@@ -118,6 +148,7 @@ async def _run() -> None:
 
     def _on_signal() -> None:
         runner.stop()
+        scheduler_task.cancel()
         if web_server is not None:
             web_server.should_exit = True
         shutdown_event.set()

@@ -16,6 +16,7 @@ MAX_OUTPUT_BYTES = 2 * 1024 * 1024  # 2 MB cap on stored output
 from app.config.settings import settings
 from app.core.broker import advance_chain, auto_retry_task, complete_task, fallback_retry_task, get_chain_by_id, is_rate_limited, maybe_reenqueue, pick_next_task
 from app.core.models import ChainStatus, Task, TaskStatus
+from app.core.webhooks import send_webhook_notifications
 
 logger = logging.getLogger(__name__)
 
@@ -179,9 +180,10 @@ class AgentRunner:
             self._current_process = process
 
             try:
+                effective_timeout = task.timeout_seconds or settings.task_timeout_seconds
                 raw_output, raw_stderr = await asyncio.wait_for(
                     self._read_output(process, task),
-                    timeout=settings.task_timeout_seconds,
+                    timeout=effective_timeout,
                 )
             except asyncio.TimeoutError:
                 logger.warning("Task #%d timed out, terminating", task.id)
@@ -432,6 +434,18 @@ class AgentRunner:
                 await self._on_complete(task)
             except Exception:
                 logger.exception("Notification callback failed for task #%d", task.id)
+
+        # Multi-channel webhook notifications
+        try:
+            status_emoji = "✅" if task.status == TaskStatus.COMPLETED else "❌"
+            wh_msg = (
+                f"{status_emoji} Task #{task.id} {task.status.value}\n"
+                f"Agent: {task.agent} | Project: {task.project_dir}\n"
+                f"Summary: {(task.output_summary or '(none)')[:200]}"
+            )
+            await send_webhook_notifications(wh_msg)
+        except Exception:
+            logger.debug("Webhook notification failed for task #%d", task.id)
 
         # Repeat logic: re-enqueue if conditions met
         requeued = await maybe_reenqueue(task)

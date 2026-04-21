@@ -29,7 +29,11 @@ from app.core.broker import (
     worker_heartbeat,
     worker_submit_result,
 )
-from app.core.models import ChainStatus, TaskStatus
+from app.core.models import ChainStatus, Task, TaskStatus
+
+from sqlalchemy import func, select
+
+from app.core.db import get_session
 
 _log = logging.getLogger(__name__)
 
@@ -64,6 +68,8 @@ def _task_to_dict(task: Any) -> dict:
         "git_diff": getattr(task, "git_diff", None),
         "model": getattr(task, "model", None),
         "fallback_index": getattr(task, "fallback_index", 0),
+        "timeout_seconds": getattr(task, "timeout_seconds", None),
+        "estimated_cost": getattr(task, "estimated_cost", None),
     }
 
 
@@ -132,6 +138,50 @@ def create_dashboard_app() -> FastAPI:
             "fallbacks": settings.model_fallbacks_list,
             "count": len(settings.model_fallbacks_list),
         }
+
+    @app.get("/api/aliases")
+    async def api_get_aliases() -> dict:
+        """Return configured model aliases."""
+        return {"aliases": settings.model_aliases}
+
+    @app.get("/api/costs")
+    async def api_get_costs() -> dict:
+        """Return cost summary for recent tasks."""
+        try:
+            session = await get_session()
+            async with session:
+                total_r = await session.execute(
+                    select(func.sum(Task.estimated_cost))
+                )
+                total_cost = total_r.scalar() or 0.0
+                today_start = datetime.now(timezone.utc).replace(
+                    hour=0, minute=0, second=0, microsecond=0, tzinfo=None
+                )
+                today_r = await session.execute(
+                    select(func.sum(Task.estimated_cost)).where(
+                        Task.created_at >= today_start
+                    )
+                )
+                today_cost = today_r.scalar() or 0.0
+            return {
+                "total_cost": round(total_cost, 4),
+                "today_cost": round(today_cost, 4),
+                "budget_limit": getattr(settings, "cost_budget_daily", 0.0),
+            }
+        except Exception:
+            _log.exception("Dashboard: error fetching costs")
+            return {"total_cost": 0.0, "today_cost": 0.0, "budget_limit": 0.0}
+
+    @app.get("/api/webhooks")
+    async def api_get_webhooks() -> dict:
+        """Return configured webhook notification channels."""
+        configs = settings.webhook_configs
+        # Redact URLs for security — only show name and type
+        safe = [
+            {"name": c.get("name", "unnamed"), "type": c.get("type", "generic"), "url_preview": c["url"][:30] + "..."}
+            for c in configs
+        ]
+        return {"webhooks": safe, "count": len(safe)}
 
     @app.get("/api/stats")
     async def api_stats() -> dict:

@@ -976,6 +976,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             clean_prompt = parts[1]
         # if only "@server2" with no task text, treat whole thing as prompt
 
+    # Parse inline directives: @timeout <seconds>
+    import re
+    task_timeout = None
+    timeout_match = re.search(r"@timeout\s+(\d+)", clean_prompt, re.IGNORECASE)
+    if timeout_match:
+        task_timeout = int(timeout_match.group(1))
+        clean_prompt = clean_prompt[:timeout_match.start()] + clean_prompt[timeout_match.end():]
+        clean_prompt = clean_prompt.strip()
+
     try:
         task = await enqueue_task(
             prompt=clean_prompt,
@@ -985,6 +994,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             msg_id=update.message.message_id,  # type: ignore[union-attr]
             model=current_model or None,
             assigned_to=assigned_to,
+            timeout_seconds=task_timeout,
         )
     except ValueError:
         await _send(update, "⚠️ Queue is full. Wait for tasks to complete.")
@@ -1886,6 +1896,168 @@ def _enrich_prompt(prompt: str, recipe) -> str:
     return "\n\n".join(parts)
 
 
+# ── Template commands ────────────────────────────────────────────────
+
+
+@auth_required
+async def cmd_templates(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List saved task templates."""
+    from app.core.broker import list_templates
+    templates = await list_templates()
+    if not templates:
+        await _send(update, "No templates saved. Use `/savetemplate name | prompt` to create one.")
+        return
+    lines = ["📋 *Task Templates*\n"]
+    for t in templates:
+        agent_str = f" ({t.agent})" if t.agent else ""
+        model_str = f" [{t.model}]" if t.model else ""
+        lines.append(f"• `{t.name}`{agent_str}{model_str}\n  {t.prompt[:60]}…")
+    await _send(update, "\n".join(lines))
+
+
+@auth_required
+async def cmd_savetemplate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Save a task template: /savetemplate name | prompt [| agent [| model]]."""
+    from app.core.broker import save_template
+    args_text = " ".join(context.args) if context.args else ""
+    parts = [p.strip() for p in args_text.split("|")]
+    if len(parts) < 2:
+        await _send(update, "Usage: `/savetemplate name | prompt [| agent [| model]]`")
+        return
+    name = parts[0]
+    prompt = parts[1]
+    agent = parts[2] if len(parts) > 2 else None
+    model = parts[3] if len(parts) > 3 else None
+    chat_id = _chat_id(update)
+    tmpl = await save_template(
+        name=name, prompt=prompt, agent=agent, model=model,
+        project_dir=_project_dir(chat_id), chat_id=chat_id,
+    )
+    await _send(update, f"✅ Template `{tmpl.name}` saved.")
+
+
+@auth_required
+async def cmd_deltemplate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Delete a template: /deltemplate name."""
+    from app.core.broker import delete_template
+    name = " ".join(context.args) if context.args else ""
+    if not name:
+        await _send(update, "Usage: `/deltemplate name`")
+        return
+    deleted = await delete_template(name)
+    if deleted:
+        await _send(update, f"✅ Template `{name}` deleted.")
+    else:
+        await _send(update, f"❌ Template `{name}` not found.")
+
+
+@auth_required
+async def cmd_runtemplate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Run a template: /run name [extra prompt text]."""
+    from app.core.broker import get_template
+    args = context.args or []
+    if not args:
+        await _send(update, "Usage: `/run template_name [extra prompt]`")
+        return
+    name = args[0]
+    extra = " ".join(args[1:]) if len(args) > 1 else ""
+    tmpl = await get_template(name)
+    if tmpl is None:
+        await _send(update, f"❌ Template `{name}` not found.")
+        return
+    prompt = tmpl.prompt + ("\n" + extra if extra else "")
+    chat_id = _chat_id(update)
+    try:
+        task = await enqueue_task(
+            prompt=prompt,
+            project_dir=tmpl.project_dir or _project_dir(chat_id),
+            agent=tmpl.agent or _agent(chat_id),
+            chat_id=chat_id,
+            msg_id=update.message.message_id,  # type: ignore[union-attr]
+            model=tmpl.model or _model(chat_id) or None,
+            timeout_seconds=tmpl.timeout_seconds,
+        )
+    except ValueError as e:
+        await _send(update, f"⚠️ {e}")
+        return
+    await _send(update, f"▶️ Running template `{name}` → Task #{task.id}")
+
+
+# ── Schedule commands ────────────────────────────────────────────────
+
+
+@auth_required
+async def cmd_schedules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List scheduled tasks."""
+    from app.core.broker import list_schedules
+    schedules = await list_schedules()
+    if not schedules:
+        await _send(update, "No schedules. Use `/schedule name | cron | prompt` to create one.")
+        return
+    lines = ["⏰ *Scheduled Tasks*\n"]
+    for s in schedules:
+        status = "✅" if s.enabled else "⏸"
+        next_run = s.next_run_at.strftime("%Y-%m-%d %H:%M") if s.next_run_at else "—"
+        lines.append(f"{status} `{s.name}` — `{s.cron_expr}`\n  Next: {next_run} | {s.prompt[:50]}…")
+    await _send(update, "\n".join(lines))
+
+
+@auth_required
+async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Create a schedule: /schedule name | cron_expr | prompt [| agent [| model]]."""
+    from app.core.broker import save_schedule
+    args_text = " ".join(context.args) if context.args else ""
+    parts = [p.strip() for p in args_text.split("|")]
+    if len(parts) < 3:
+        await _send(update, "Usage: `/schedule name | cron_expr | prompt [| agent [| model]]`\n"
+                    "Cron: `HH:MM` (daily), `*/N` (every N min), or 5-field cron")
+        return
+    name = parts[0]
+    cron_expr = parts[1]
+    prompt = parts[2]
+    agent = parts[3] if len(parts) > 3 else None
+    model = parts[4] if len(parts) > 4 else None
+    chat_id = _chat_id(update)
+    sched = await save_schedule(
+        name=name, cron_expr=cron_expr, prompt=prompt,
+        agent=agent, model=model, project_dir=_project_dir(chat_id),
+        chat_id=chat_id,
+    )
+    next_run = sched.next_run_at.strftime("%Y-%m-%d %H:%M") if sched.next_run_at else "—"
+    await _send(update, f"✅ Schedule `{sched.name}` saved. Next run: {next_run}")
+
+
+@auth_required
+async def cmd_delschedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Delete a schedule: /delschedule name."""
+    from app.core.broker import delete_schedule
+    name = " ".join(context.args) if context.args else ""
+    if not name:
+        await _send(update, "Usage: `/delschedule name`")
+        return
+    deleted = await delete_schedule(name)
+    if deleted:
+        await _send(update, f"✅ Schedule `{name}` deleted.")
+    else:
+        await _send(update, f"❌ Schedule `{name}` not found.")
+
+
+@auth_required
+async def cmd_toggleschedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Toggle a schedule on/off: /toggleschedule name."""
+    from app.core.broker import toggle_schedule
+    name = " ".join(context.args) if context.args else ""
+    if not name:
+        await _send(update, "Usage: `/toggleschedule name`")
+        return
+    sched = await toggle_schedule(name)
+    if sched is None:
+        await _send(update, f"❌ Schedule `{name}` not found.")
+        return
+    status = "enabled ✅" if sched.enabled else "paused ⏸"
+    await _send(update, f"Schedule `{name}` is now {status}")
+
+
 # ── Build the Application ───────────────────────────────────────────
 
 def build_app(runner=None) -> Application:
@@ -1925,6 +2097,14 @@ def build_app(runner=None) -> Application:
     app.add_handler(CommandHandler("delrecipe", cmd_delrecipe))
     app.add_handler(CommandHandler("recipe", cmd_recipe))
     app.add_handler(CommandHandler("gallery", cmd_gallery))
+    app.add_handler(CommandHandler("templates", cmd_templates))
+    app.add_handler(CommandHandler("savetemplate", cmd_savetemplate))
+    app.add_handler(CommandHandler("deltemplate", cmd_deltemplate))
+    app.add_handler(CommandHandler("run", cmd_runtemplate))
+    app.add_handler(CommandHandler("schedules", cmd_schedules))
+    app.add_handler(CommandHandler("schedule", cmd_schedule))
+    app.add_handler(CommandHandler("delschedule", cmd_delschedule))
+    app.add_handler(CommandHandler("toggleschedule", cmd_toggleschedule))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(handle_agent_callback, pattern=r"^switch:"))
     app.add_handler(CallbackQueryHandler(handle_model_set_callback, pattern=r"^modelset:"))
