@@ -55,6 +55,14 @@ from app.core.broker import (
     switch_task_model,
     switch_task_worker,
 )
+from app.core.dispatcher import (
+    ClassifiedIntent,
+    IntentAction,
+    SafetyLevel,
+    classify,
+    classify_pattern,
+    format_confirmation,
+)
 from app.core.models import ChainStatus, Task, TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -64,7 +72,9 @@ logger = logging.getLogger(__name__)
 _chat_project_dir: dict[int, str] = {}
 _chat_agent: dict[int, str] = {}
 _chat_model: dict[int, str] = {}
+_chat_smart_mode: dict[int, bool] = {}
 _chat_followup: dict[int, int] = {}  # chat_id → parent_task_id for follow-up mode
+_pending_smart_actions: dict[int, ClassifiedIntent] = {}  # chat_id → pending intent awaiting confirm
 _runner_ref = None  # set by build_app() to enable /cancel subprocess kill
 
 MAX_MSG_LEN = 4096
@@ -114,6 +124,8 @@ async def _load_prefs(chat_id: int) -> None:
         _chat_agent[chat_id] = prefs["agent"]
     if prefs.get("model") and chat_id not in _chat_model:
         _chat_model[chat_id] = prefs["model"]
+    if chat_id not in _chat_smart_mode:
+        _chat_smart_mode[chat_id] = prefs.get("smart_mode", False)
     _loaded.add(chat_id)
 
 
@@ -962,6 +974,34 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             parse_mode=ParseMode.MARKDOWN,
         )
         return
+
+    # ── Smart mode: classify intent and route ────────────────────────
+    if _chat_smart_mode.get(chat_id, False):
+        intent = await classify(prompt, use_llm=False)
+
+        if intent.action != IntentAction.TASK_PROMPT and intent.confidence >= 0.7:
+            safety = intent.safety
+
+            if safety == SafetyLevel.READ:
+                # Auto-execute read-only actions
+                await _execute_smart_intent(update, intent, chat_id)
+                return
+
+            # For CREATE, DESTROY, EXECUTE — show confirmation
+            _pending_smart_actions[chat_id] = intent
+            confirm_text = format_confirmation(intent)
+            buttons = [
+                [
+                    InlineKeyboardButton("✅ Confirm", callback_data=f"smartconfirm:{chat_id}"),
+                    InlineKeyboardButton("❌ Cancel", callback_data=f"smartcancel:{chat_id}"),
+                ],
+                [
+                    InlineKeyboardButton("📋 Queue as task", callback_data=f"smartexec:{chat_id}"),
+                ],
+            ]
+            keyboard = InlineKeyboardMarkup(buttons)
+            await _send(update, confirm_text, reply_markup=keyboard)
+            return
 
     current_agent = _agent(chat_id)
     current_model = _model(chat_id)
@@ -1896,6 +1936,307 @@ def _enrich_prompt(prompt: str, recipe) -> str:
     return "\n\n".join(parts)
 
 
+# ── Smart mode commands ──────────────────────────────────────────────
+
+
+@auth_required
+async def cmd_smartmode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Toggle smart/AI mode: /smartmode [on|off]."""
+    chat_id = _chat_id(update)
+    await _load_prefs(chat_id)
+    arg = (context.args[0].lower() if context.args else "").strip()
+
+    if arg == "on":
+        enabled = True
+    elif arg == "off":
+        enabled = False
+    else:
+        # Toggle
+        enabled = not _chat_smart_mode.get(chat_id, False)
+
+    _chat_smart_mode[chat_id] = enabled
+    await set_chat_pref(chat_id, smart_mode=enabled)
+    status_text = "enabled ✅" if enabled else "disabled ❌"
+    detail = ("When enabled, I classify your messages and route to the right command — "
+              "with confirmation for changes." if enabled else "Messages will be queued as tasks directly.")
+    await _send(
+        update,
+        f"🤖 Smart mode {status_text}\n\n{detail}"
+    )
+
+
+async def _execute_smart_intent(update: Update, intent: ClassifiedIntent, chat_id: int) -> None:
+    """Execute a classified intent — called directly for READ actions or after confirmation."""
+    action = intent.action
+    params = intent.params
+
+    if action == IntentAction.LIST_TEMPLATES:
+        from app.core.broker import list_templates
+        templates = await list_templates()
+        if not templates:
+            await _send(update, "No templates saved. Use `/savetemplate name | prompt` to create one.")
+            return
+        lines = ["📋 *Task Templates*\n"]
+        for t in templates:
+            agent_str = f" ({t.agent})" if t.agent else ""
+            model_str = f" [{t.model}]" if t.model else ""
+            lines.append(f"• `{t.name}`{agent_str}{model_str}\n  {t.prompt[:60]}…")
+        await _send(update, "\n".join(lines))
+
+    elif action == IntentAction.LIST_SCHEDULES:
+        from app.core.broker import list_schedules
+        schedules = await list_schedules()
+        if not schedules:
+            await _send(update, "No schedules. Use `/schedule name | cron | prompt` to create one.")
+            return
+        lines = ["⏰ *Scheduled Tasks*\n"]
+        for s in schedules:
+            status = "✅" if s.enabled else "⏸"
+            next_run = s.next_run_at.strftime("%Y-%m-%d %H:%M") if s.next_run_at else "—"
+            lines.append(f"{status} `{s.name}` — `{s.cron_expr}`\n  Next: {next_run} | {s.prompt[:50]}…")
+        await _send(update, "\n".join(lines))
+
+    elif action == IntentAction.SHOW_STATUS:
+        task = await get_running_task()
+        if task is None:
+            await _send(update, "💤 No task running.")
+        else:
+            prompt_short = task.prompt[:80].replace('`', "'")
+            model_tag = f"  model: `{task.model}`" if task.model else ""
+            await _send(update, f"🔄 *Running — Task #{task.id}*\n`{task.agent}`{model_tag}\n_{prompt_short}_")
+
+    elif action == IntentAction.SHOW_QUEUE:
+        tasks = await get_pending_tasks()
+        if not tasks:
+            await _send(update, "📭 Queue is empty.")
+        else:
+            lines = ["📦 *Pending tasks:*\n"]
+            for t in tasks:
+                lines.append(f"• #{t.id} `{t.agent}` — _{t.prompt[:50]}_")
+            await _send(update, "\n".join(lines))
+
+    elif action == IntentAction.SHOW_HISTORY:
+        tasks = await get_recent_tasks(10)
+        if not tasks:
+            await _send(update, "📭 No recent tasks.")
+        else:
+            lines = ["📜 *Recent tasks:*\n"]
+            for t in tasks:
+                emoji = _status_emoji(t.status)
+                lines.append(f"{emoji} #{t.id} `{t.agent}` — _{t.prompt[:50]}_")
+            await _send(update, "\n".join(lines))
+
+    elif action == IntentAction.SHOW_COSTS:
+        tasks = await get_recent_tasks(50)
+        total = sum(t.estimated_cost or 0.0 for t in tasks)
+        await _send(update, f"💰 Estimated cost for last 50 tasks: `${total:.4f}`")
+
+    elif action == IntentAction.CANCEL_TASK:
+        cancelled = await cancel_running_task()
+        if cancelled:
+            if _runner_ref:
+                _runner_ref.kill_current()
+            await _send(update, f"🚫 Task #{cancelled.id} cancelled.")
+        else:
+            await _send(update, "No running task to cancel.")
+
+    elif action == IntentAction.SET_PROJECT:
+        path = params.get("project_dir", "")
+        if not path:
+            await _send(update, "⚠️ No project path found in your message.")
+            return
+        if not _is_allowed_project_dir(path):
+            allowed = ", ".join(f"`{d}`" for d in settings.allowed_project_dirs_list)
+            await _send(update, f"⚠️ Not allowed. Allowed dirs: {allowed}")
+            return
+        _chat_project_dir[chat_id] = path
+        await set_chat_pref(chat_id, project_dir=path)
+        await _send(update, f"📂 Project → `{path}`")
+
+    elif action == IntentAction.SET_AGENT:
+        agent = params.get("agent", "")
+        if not agent:
+            await _send(update, "⚠️ No agent name found in your message.")
+            return
+        if agent not in settings.agent_commands:
+            available = ", ".join(f"`{a}`" for a in settings.agent_commands)
+            await _send(update, f"⚠️ Unknown agent. Available: {available}")
+            return
+        _chat_agent[chat_id] = agent
+        await set_chat_pref(chat_id, agent=agent)
+        await _send(update, f"🤖 Agent → `{agent}`")
+
+    elif action == IntentAction.SET_MODEL:
+        model = params.get("model", "")
+        if not model:
+            await _send(update, "⚠️ No model name found in your message.")
+            return
+        _chat_model[chat_id] = model
+        await set_chat_pref(chat_id, model=model)
+        await _send(update, f"🧠 Model → `{model}`")
+
+    elif action == IntentAction.SAVE_TEMPLATE:
+        from app.core.broker import save_template
+        name = params.get("name")
+        prompt = params.get("prompt")
+        if not name or not prompt:
+            await _send(update, "⚠️ Couldn't parse template name/prompt. Try: `/savetemplate name | prompt`")
+            return
+        tmpl = await save_template(
+            name=name, prompt=prompt, agent=params.get("agent"),
+            model=params.get("model"), project_dir=_project_dir(chat_id),
+            chat_id=chat_id,
+        )
+        await _send(update, f"✅ Template `{tmpl.name}` saved.")
+
+    elif action == IntentAction.SAVE_SCHEDULE:
+        from app.core.broker import save_schedule
+        name = params.get("name")
+        cron_expr = params.get("cron_expr")
+        prompt = params.get("prompt")
+        if not name or not cron_expr or not prompt:
+            await _send(update, "⚠️ Missing schedule params. Try: `/schedule name | cron | prompt`")
+            return
+        sched = await save_schedule(
+            name=name, cron_expr=cron_expr, prompt=prompt,
+            agent=params.get("agent"), model=params.get("model"),
+            project_dir=_project_dir(chat_id), chat_id=chat_id,
+        )
+        next_run = sched.next_run_at.strftime("%Y-%m-%d %H:%M") if sched.next_run_at else "—"
+        await _send(update, f"✅ Schedule `{sched.name}` saved. Next run: {next_run}")
+
+    elif action == IntentAction.DELETE_TEMPLATE:
+        from app.core.broker import delete_template
+        name = params.get("name", "")
+        if not name:
+            await _send(update, "⚠️ No template name found.")
+            return
+        deleted = await delete_template(name)
+        if deleted:
+            await _send(update, f"✅ Template `{name}` deleted.")
+        else:
+            await _send(update, f"❌ Template `{name}` not found.")
+
+    elif action == IntentAction.DELETE_SCHEDULE:
+        from app.core.broker import delete_schedule
+        name = params.get("name", "")
+        if not name:
+            await _send(update, "⚠️ No schedule name found.")
+            return
+        deleted = await delete_schedule(name)
+        if deleted:
+            await _send(update, f"✅ Schedule `{name}` deleted.")
+        else:
+            await _send(update, f"❌ Schedule `{name}` not found.")
+
+    elif action == IntentAction.RUN_TEMPLATE:
+        from app.core.broker import get_template
+        name = params.get("name", "")
+        if not name:
+            await _send(update, "⚠️ No template name found.")
+            return
+        tmpl = await get_template(name)
+        if tmpl is None:
+            await _send(update, f"❌ Template `{name}` not found.")
+            return
+        try:
+            task = await enqueue_task(
+                prompt=tmpl.prompt,
+                project_dir=tmpl.project_dir or _project_dir(chat_id),
+                agent=tmpl.agent or _agent(chat_id),
+                chat_id=chat_id,
+                msg_id=update.message.message_id if update.message else 0,
+                model=tmpl.model or _model(chat_id) or None,
+                timeout_seconds=tmpl.timeout_seconds,
+            )
+        except ValueError as e:
+            await _send(update, f"⚠️ {e}")
+            return
+        await _send(update, f"▶️ Running template `{name}` → Task #{task.id}")
+
+    elif action == IntentAction.TOGGLE_SCHEDULE:
+        from app.core.broker import toggle_schedule
+        name = params.get("name", "")
+        if not name:
+            await _send(update, "⚠️ No schedule name found.")
+            return
+        sched = await toggle_schedule(name)
+        if sched is None:
+            await _send(update, f"❌ Schedule `{name}` not found.")
+            return
+        status = "enabled ✅" if sched.enabled else "paused ⏸"
+        await _send(update, f"Schedule `{name}` is now {status}")
+
+    else:
+        # TASK_PROMPT or AMBIGUOUS — shouldn't reach here
+        await _send(update, "⚠️ Couldn't complete action. Try using the command directly.")
+
+
+@auth_required
+async def handle_smart_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle ✅ Confirm button for smart mode."""
+    query = update.callback_query
+    await query.answer()  # type: ignore[union-attr]
+
+    chat_id = int((query.data or "").split(":", 1)[-1])  # type: ignore[union-attr]
+    intent = _pending_smart_actions.pop(chat_id, None)
+    if intent is None:
+        await query.edit_message_text("⏳ Action expired. Please try again.")  # type: ignore[union-attr]
+        return
+
+    await query.edit_message_text(  # type: ignore[union-attr]
+        f"✅ Executing: {intent.action.value}...",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+    await _execute_smart_intent(update, intent, chat_id)
+
+
+@auth_required
+async def handle_smart_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle ❌ Cancel button for smart mode."""
+    query = update.callback_query
+    await query.answer()  # type: ignore[union-attr]
+
+    chat_id = int((query.data or "").split(":", 1)[-1])  # type: ignore[union-attr]
+    _pending_smart_actions.pop(chat_id, None)
+    await query.edit_message_text("❌ Cancelled.")  # type: ignore[union-attr]
+
+
+@auth_required
+async def handle_smart_execute(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle 'Run as task' button — fall through to regular task enqueue."""
+    query = update.callback_query
+    await query.answer()  # type: ignore[union-attr]
+
+    data = query.data or ""  # type: ignore[union-attr]
+    parts = data.split(":", 1)
+    if len(parts) < 2:
+        return
+    chat_id = int(parts[1])
+    intent = _pending_smart_actions.pop(chat_id, None)
+    raw_text = intent.raw_text if intent else ""
+    if not raw_text:
+        await query.edit_message_text("⏳ Action expired.")  # type: ignore[union-attr]
+        return
+
+    await query.edit_message_text(f"📋 Queuing as task...")  # type: ignore[union-attr]
+
+    # Enqueue as regular task
+    try:
+        task = await enqueue_task(
+            prompt=raw_text,
+            project_dir=_project_dir(chat_id),
+            agent=_agent(chat_id),
+            chat_id=chat_id,
+            msg_id=0,
+            model=_model(chat_id) or None,
+        )
+    except ValueError:
+        await _send(update, "⚠️ Queue is full.")
+        return
+    await _send(update, f"📋 *Queued #{task.id}*  `{_agent(chat_id)}`\n_{raw_text[:80]}_")
+
+
 # ── Template commands ────────────────────────────────────────────────
 
 
@@ -2105,6 +2446,7 @@ def build_app(runner=None) -> Application:
     app.add_handler(CommandHandler("schedule", cmd_schedule))
     app.add_handler(CommandHandler("delschedule", cmd_delschedule))
     app.add_handler(CommandHandler("toggleschedule", cmd_toggleschedule))
+    app.add_handler(CommandHandler("smartmode", cmd_smartmode))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(handle_agent_callback, pattern=r"^switch:"))
     app.add_handler(CallbackQueryHandler(handle_model_set_callback, pattern=r"^modelset:"))
@@ -2115,5 +2457,8 @@ def build_app(runner=None) -> Application:
     app.add_handler(CallbackQueryHandler(handle_task_action_callback, pattern=r"^task(retry|output|followup):"))
     app.add_handler(CallbackQueryHandler(handle_recipe_callback, pattern=r"^recipe(use|skip):"))
     app.add_handler(CallbackQueryHandler(handle_gallery_callback, pattern=r"^gallery(cat|all):"))
+    app.add_handler(CallbackQueryHandler(handle_smart_confirm, pattern=r"^smartconfirm:"))
+    app.add_handler(CallbackQueryHandler(handle_smart_cancel, pattern=r"^smartcancel:"))
+    app.add_handler(CallbackQueryHandler(handle_smart_execute, pattern=r"^smartexec:"))
 
     return app

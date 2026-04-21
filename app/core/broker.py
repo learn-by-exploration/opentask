@@ -1037,7 +1037,7 @@ async def purge_old_tasks(days: int = 30) -> int:
 
 
 async def get_chat_prefs(chat_id: int) -> dict:
-    """Return {"project_dir": ..., "agent": ..., "model": ...} for a chat. Missing keys → None."""
+    """Return {"project_dir": ..., "agent": ..., "model": ..., "smart_mode": ...} for a chat."""
     session = await get_session()
     async with session:
         result = await session.execute(
@@ -1045,11 +1045,16 @@ async def get_chat_prefs(chat_id: int) -> dict:
         )
         prefs = result.scalar_one_or_none()
         if prefs is None:
-            return {"project_dir": None, "agent": None, "model": None}
-        return {"project_dir": prefs.project_dir, "agent": prefs.agent, "model": prefs.model}
+            return {"project_dir": None, "agent": None, "model": None, "smart_mode": False}
+        return {
+            "project_dir": prefs.project_dir,
+            "agent": prefs.agent,
+            "model": prefs.model,
+            "smart_mode": bool(prefs.smart_mode),
+        }
 
 
-async def set_chat_pref(chat_id: int, *, project_dir: str | None = None, agent: str | None = None, model: str | None = None) -> None:
+async def set_chat_pref(chat_id: int, *, project_dir: str | None = None, agent: str | None = None, model: str | None = None, smart_mode: bool | None = None) -> None:
     """Upsert a single chat preference."""
     session = await get_session()
     async with session, session.begin():
@@ -1066,6 +1071,8 @@ async def set_chat_pref(chat_id: int, *, project_dir: str | None = None, agent: 
             prefs.agent = agent
         if model is not None:
             prefs.model = model
+        if smart_mode is not None:
+            prefs.smart_mode = int(smart_mode)
         prefs.updated_at = _utcnow()
 
 

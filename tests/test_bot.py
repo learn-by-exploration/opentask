@@ -184,7 +184,8 @@ class TestStatusEmoji:
 # ── /start ───────────────────────────────────────────────────────────
 
 class TestCmdStart:
-    async def test_sends_welcome(self):
+    @patch("app.telegram.bot.get_chat_prefs", new_callable=AsyncMock, return_value={"project_dir": None, "agent": None, "model": None, "smart_mode": False})
+    async def test_sends_welcome(self, mock_prefs):
         update = _make_update()
         ctx = _make_context()
         await cmd_start(update, ctx)

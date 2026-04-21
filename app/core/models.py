@@ -132,6 +132,7 @@ class ChatPrefs(Base):
     project_dir: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     agent: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     model: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    smart_mode: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 

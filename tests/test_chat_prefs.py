@@ -62,7 +62,7 @@ async def test_get_chat_prefs_empty(broker_session):
     from app.core.broker import get_chat_prefs
 
     prefs = await get_chat_prefs(12345)
-    assert prefs == {"project_dir": None, "agent": None, "model": None}
+    assert prefs == {"project_dir": None, "agent": None, "model": None, "smart_mode": False}
 
 
 @pytest.mark.asyncio
