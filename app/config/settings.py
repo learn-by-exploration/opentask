@@ -28,6 +28,10 @@ class Settings(BaseSettings):
 
     default_model: str = ""  # empty = use agent default; e.g. "sonnet" or "anthropic/claude-sonnet-4"
 
+    # Ordered fallback models: when a task hits a rate limit, retry with the next model
+    # Comma-separated, e.g. "claude-sonnet-4,gpt-5.4,gemini-2.5-pro"
+    model_fallbacks: str = ""
+
     # Continue/session-resume flags per agent (for follow-up tasks)
     agent_continue_flags: dict[str, str] = {
         "opencode": "--continue",
@@ -73,6 +77,13 @@ class Settings(BaseSettings):
         if v < 5:
             raise ValueError("progress_interval_seconds must be >= 5")
         return v
+
+    @property
+    def model_fallbacks_list(self) -> list[str]:
+        v = self.model_fallbacks
+        if isinstance(v, list):
+            return v
+        return [m.strip() for m in v.split(",") if m.strip()]
 
     @property
     def known_workers_list(self) -> list[str]:

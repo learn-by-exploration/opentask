@@ -63,6 +63,7 @@ def _task_to_dict(task: Any) -> dict:
         "retry_count": getattr(task, "retry_count", 0),
         "git_diff": getattr(task, "git_diff", None),
         "model": getattr(task, "model", None),
+        "fallback_index": getattr(task, "fallback_index", 0),
     }
 
 
@@ -123,6 +124,14 @@ def create_dashboard_app() -> FastAPI:
     @app.get("/api/health")
     async def api_health() -> dict:
         return {"status": "ok", "service": "taskpilot"}
+
+    @app.get("/api/fallbacks")
+    async def api_get_fallbacks() -> dict:
+        """Return current model fallback chain."""
+        return {
+            "fallbacks": settings.model_fallbacks_list,
+            "count": len(settings.model_fallbacks_list),
+        }
 
     @app.get("/api/stats")
     async def api_stats() -> dict:

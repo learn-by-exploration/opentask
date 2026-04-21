@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -231,6 +232,8 @@ class TestExecuteIntegration:
 
         import app.core.runner as runner_mod
         monkeypatch.setattr(runner_mod, "complete_task", fake_complete)
+        monkeypatch.setattr(runner_mod, "auto_retry_task", AsyncMock(return_value=None))
+        monkeypatch.setattr(runner_mod, "fallback_retry_task", AsyncMock(return_value=None))
 
         runner = AgentRunner()
         task = _make_task(prompt="exit 42", agent="test_agent", project_dir=str(tmp_path))
@@ -254,6 +257,8 @@ class TestExecuteIntegration:
 
         import app.core.runner as runner_mod
         monkeypatch.setattr(runner_mod, "complete_task", fake_complete)
+        monkeypatch.setattr(runner_mod, "auto_retry_task", AsyncMock(return_value=None))
+        monkeypatch.setattr(runner_mod, "fallback_retry_task", AsyncMock(return_value=None))
 
         runner = AgentRunner()
         task = _make_task(project_dir="/nonexistent/path/xyz")

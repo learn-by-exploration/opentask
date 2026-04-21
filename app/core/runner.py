@@ -14,7 +14,7 @@ from typing import Any
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024  # 2 MB cap on stored output
 
 from app.config.settings import settings
-from app.core.broker import advance_chain, auto_retry_task, complete_task, get_chain_by_id, maybe_reenqueue, pick_next_task
+from app.core.broker import advance_chain, auto_retry_task, complete_task, fallback_retry_task, get_chain_by_id, is_rate_limited, maybe_reenqueue, pick_next_task
 from app.core.models import ChainStatus, Task, TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -396,7 +396,23 @@ class AgentRunner:
             return ""
 
     async def _after_complete(self, task: Task) -> None:
-        """Handle post-completion: auto-retry, notify, repeat, chain advance."""
+        """Handle post-completion: model fallback, auto-retry, notify, repeat, chain advance."""
+        # Model fallback: if task failed with rate-limit indicators, try next model
+        if task.status == TaskStatus.FAILED and task.full_output and is_rate_limited(task.full_output):
+            fallback = await fallback_retry_task(task.id)
+            if fallback:
+                logger.info(
+                    "Model fallback: task #%d (model=%s) rate-limited → #%d (model=%s, fallback %d)",
+                    task.id, task.model or "default", fallback.id,
+                    fallback.model, fallback.fallback_index,
+                )
+                if self._on_complete:
+                    try:
+                        await self._on_complete(task)
+                    except Exception:
+                        logger.exception("Notification callback failed for task #%d", task.id)
+                return
+
         # Auto-retry transient failures (exit_code < 0: crash, signal, timeout)
         if task.status == TaskStatus.FAILED:
             retried = await auto_retry_task(task.id)

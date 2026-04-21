@@ -109,6 +109,9 @@ class Task(Base):
     retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     max_retries: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
+    # ── Model fallback tracking ─────────────────────────────────────
+    fallback_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utcnow
     )

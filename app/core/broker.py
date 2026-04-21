@@ -24,7 +24,7 @@ _TASK_SUMMARY_COLUMNS = (
     Task.repeat_total, Task.repeat_remaining, Task.repeat_until,
     Task.assigned_to, Task.worker_id, Task.heartbeat_at,
     Task.priority, Task.retry_count, Task.max_retries, Task.git_diff,
-    Task.model,
+    Task.model, Task.fallback_index,
     Task.created_at, Task.started_at, Task.completed_at, Task.duration_seconds,
 )
 
@@ -1117,6 +1117,91 @@ async def auto_retry_task(task_id: int) -> Task | None:
             retry_count=source.retry_count + 1,
             max_retries=source.max_retries,
             assigned_to=source.assigned_to,
+            fallback_index=source.fallback_index,
+        )
+        session.add(new_task)
+        await session.flush()
+        await session.refresh(new_task)
+    if _runner_wake:
+        _runner_wake()
+    return new_task
+
+
+# ── Model fallback retry ─────────────────────────────────────────────
+
+# Patterns that indicate a rate-limit or overload (case-insensitive)
+RATE_LIMIT_PATTERNS = (
+    "rate limit",
+    "rate_limit",
+    "ratelimit",
+    "429",
+    "too many requests",
+    "overloaded",
+    "overloaded_error",
+    "capacity",
+    "quota exceeded",
+    "resource_exhausted",
+    "server_busy",
+    "throttled",
+    "service unavailable",
+    "503",
+)
+
+
+def is_rate_limited(output: str) -> bool:
+    """Check if task output contains rate-limit indicators."""
+    lower = output.lower()
+    return any(p in lower for p in RATE_LIMIT_PATTERNS)
+
+
+async def fallback_retry_task(task_id: int) -> Task | None:
+    """Retry a FAILED task with the next model in the fallback chain.
+
+    Returns the newly created task, or None if no fallback available.
+    """
+    fallbacks = settings.model_fallbacks_list
+    if not fallbacks:
+        return None
+
+    session = await get_session()
+    async with session, session.begin():
+        result = await session.execute(select(Task).where(Task.id == task_id))
+        source = result.scalar_one_or_none()
+        if source is None:
+            return None
+        if source.status != TaskStatus.FAILED:
+            return None
+
+        next_index = source.fallback_index + 1
+        if next_index >= len(fallbacks):
+            return None  # exhausted all fallbacks
+
+        next_model = fallbacks[next_index]
+
+        # Check queue capacity
+        count_result = await session.execute(
+            select(func.count())
+            .select_from(Task)
+            .where(Task.status.in_([TaskStatus.PENDING, TaskStatus.RUNNING]))
+        )
+        active_count = count_result.scalar() or 0
+        if active_count >= settings.max_queue_size:
+            return None
+
+        new_task = Task(
+            prompt=source.prompt,
+            project_dir=source.project_dir,
+            agent=source.agent,
+            model=next_model,
+            status=TaskStatus.PENDING,
+            telegram_chat_id=source.telegram_chat_id,
+            priority=source.priority,
+            retry_count=0,
+            max_retries=source.max_retries,
+            assigned_to=source.assigned_to,
+            fallback_index=next_index,
+            chain_id=source.chain_id,
+            chain_step=source.chain_step,
         )
         session.add(new_task)
         await session.flush()
