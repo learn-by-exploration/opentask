@@ -1001,8 +1001,9 @@ class TestRepeatAdversarial:
     @pytest.mark.asyncio
     async def test_prompt_too_long(self, _patch_broker):
         from app.telegram.bot import cmd_repeat
+        from app.config.settings import settings
         u = _update()
-        await cmd_repeat(u, _ctx("3", "x" * 2001))
+        await cmd_repeat(u, _ctx("3", "x" * (settings.max_prompt_len + 1)))
         assert "too long" in str(u.get_bot().send_message.call_args).lower()
 
     @pytest.mark.asyncio
@@ -1131,16 +1132,20 @@ class TestHandleTextAdversarial:
     @pytest.mark.asyncio
     async def test_text_too_long(self, _patch_broker):
         from app.telegram.bot import handle_text
-        u = _update(text="x" * 2001)
-        u.message.text = "x" * 2001
+        from app.config.settings import settings
+        long = "x" * (settings.max_prompt_len + 1)
+        u = _update(text=long)
+        u.message.text = long
         await handle_text(u, _ctx())
         assert "too long" in str(u.get_bot().send_message.call_args).lower()
 
     @pytest.mark.asyncio
-    async def test_text_exactly_2000(self, _patch_broker):
+    async def test_text_at_max_limit(self, _patch_broker):
         from app.telegram.bot import handle_text
-        u = _update(text="x" * 2000)
-        u.message.text = "x" * 2000
+        from app.config.settings import settings
+        at_limit = "x" * settings.max_prompt_len
+        u = _update(text=at_limit)
+        u.message.text = at_limit
         await handle_text(u, _ctx())
         u.message.reply_text.assert_called()
 
@@ -1589,11 +1594,13 @@ class TestContinueCommandAdversarial:
     async def test_prompt_too_long(self, _patch_broker):
         from app.telegram.bot import cmd_continue
         from app.core.broker import enqueue_task, pick_next_task, complete_task
+        from app.config.settings import settings
         task = await enqueue_task("test", "/tmp", "opencode", chat_id=12345)
         await pick_next_task()
         await complete_task(task.id, 0, "ok", "output")
-        u = _update(text=f"/continue {task.id} {'x' * 2001}")
-        u.message.text = f"/continue {task.id} {'x' * 2001}"
+        long = "x" * (settings.max_prompt_len + 1)
+        u = _update(text=f"/continue {task.id} {long}")
+        u.message.text = f"/continue {task.id} {long}"
         await cmd_continue(u, _ctx())
         assert "too long" in str(u.get_bot().send_message.call_args).lower()
 

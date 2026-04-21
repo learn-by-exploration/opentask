@@ -68,7 +68,6 @@ _chat_followup: dict[int, int] = {}  # chat_id → parent_task_id for follow-up 
 _runner_ref = None  # set by build_app() to enable /cancel subprocess kill
 
 MAX_MSG_LEN = 4096
-MAX_PROMPT_LEN = 2000
 
 
 # ── Auth guard ──────────────────────────────────────────────────────
@@ -717,8 +716,8 @@ async def cmd_repeat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not prompt:
         await _send(update, "Missing prompt after repeat options.")
         return
-    if len(prompt) > MAX_PROMPT_LEN:
-        await _send(update, f"⚠️ Prompt too long ({len(prompt)} chars). Max is {MAX_PROMPT_LEN}.")
+    if len(prompt) > settings.max_prompt_len:
+        await _send(update, f"⚠️ Prompt too long ({len(prompt)} chars). Max is {settings.max_prompt_len}.")
         return
 
     chat_id = _chat_id(update)
@@ -888,8 +887,8 @@ async def cmd_continue(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not prompt:
         await _send(update, "⚠️ Prompt cannot be empty.")
         return
-    if len(prompt) > MAX_PROMPT_LEN:
-        await _send(update, f"⚠️ Prompt too long ({len(prompt)} chars). Max is {MAX_PROMPT_LEN}.")
+    if len(prompt) > settings.max_prompt_len:
+        await _send(update, f"⚠️ Prompt too long ({len(prompt)} chars). Max is {settings.max_prompt_len}.")
         return
 
     chat_id = _chat_id(update)
@@ -936,8 +935,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     prompt = _sanitize_text(update.message.text or "")  # type: ignore[union-attr]
     if not prompt:
         return
-    if len(prompt) > MAX_PROMPT_LEN:
-        await _send(update, f"⚠️ Prompt too long ({len(prompt)} chars). Max is {MAX_PROMPT_LEN}.")
+    if len(prompt) > settings.max_prompt_len:
+        await _send(update, f"⚠️ Prompt too long ({len(prompt)} chars). Max is {settings.max_prompt_len}.")
         return
 
     chat_id = _chat_id(update)

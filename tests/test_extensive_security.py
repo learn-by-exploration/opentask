@@ -269,13 +269,14 @@ class TestHandleTextAutoQueue:
 
     @pytest.mark.asyncio
     async def test_auto_queue_prompt_too_long(self, fresh_db):
-        """Prompt exceeding MAX_PROMPT_LEN should be rejected."""
-        from app.telegram.bot import handle_text, MAX_PROMPT_LEN, _chat_agent, _chat_project_dir
+        """Prompt exceeding max_prompt_len should be rejected."""
+        from app.telegram.bot import handle_text, _chat_agent, _chat_project_dir
+        from app.config.settings import settings
 
         _chat_agent.clear()
         _chat_project_dir.clear()
 
-        long_prompt = "x" * (MAX_PROMPT_LEN + 1)
+        long_prompt = "x" * (settings.max_prompt_len + 1)
         update = _make_update(text=long_prompt)
         ctx = _make_context()
         await handle_text(update, ctx)

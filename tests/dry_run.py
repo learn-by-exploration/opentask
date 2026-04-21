@@ -73,8 +73,9 @@ except Exception as e:
     check("runner import", False, str(e))
 
 try:
-    from app.telegram.bot import build_app, make_notify_callback, MAX_PROMPT_LEN, MAX_MSG_LEN
-    check("bot import", True, f"MAX_PROMPT={MAX_PROMPT_LEN}, MAX_MSG={MAX_MSG_LEN}")
+    from app.telegram.bot import build_app, make_notify_callback, MAX_MSG_LEN
+    from app.config.settings import settings
+    check("bot import", True, f"MAX_PROMPT={settings.max_prompt_len}, MAX_MSG={MAX_MSG_LEN}")
 except Exception as e:
     check("bot import", False, str(e))
 

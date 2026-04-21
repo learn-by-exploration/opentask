@@ -765,8 +765,8 @@ async def save_chain(
     for i, step in enumerate(steps):
         if not step.get("prompt"):
             raise ValueError(f"Step {i} missing 'prompt'")
-        if len(step["prompt"]) > 2000:
-            raise ValueError(f"Step {i} prompt exceeds 2000 chars")
+        if len(step["prompt"]) > settings.max_prompt_len:
+            raise ValueError(f"Step {i} prompt exceeds {settings.max_prompt_len} chars")
 
     session = await get_session()
     async with session, session.begin():
@@ -1155,10 +1155,10 @@ async def save_recipe(
         raise ValueError("Recipe cannot have more than 20 setup commands")
     if skills and len(skills) > 20:
         raise ValueError("Recipe cannot have more than 20 skills")
-    if prompt_prefix and len(prompt_prefix) > 2000:
-        raise ValueError("prompt_prefix exceeds 2000 chars")
-    if prompt_suffix and len(prompt_suffix) > 2000:
-        raise ValueError("prompt_suffix exceeds 2000 chars")
+    if prompt_prefix and len(prompt_prefix) > settings.max_prompt_len:
+        raise ValueError(f"prompt_prefix exceeds {settings.max_prompt_len} chars")
+    if prompt_suffix and len(prompt_suffix) > settings.max_prompt_len:
+        raise ValueError(f"prompt_suffix exceeds {settings.max_prompt_len} chars")
 
     session = await get_session()
     async with session, session.begin():

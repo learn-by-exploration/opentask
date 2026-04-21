@@ -479,8 +479,9 @@ class TestRepeatCommand:
     @patch("app.telegram.bot.get_chat_prefs", new_callable=AsyncMock, return_value={"project_dir": None, "agent": None})
     async def test_repeat_prompt_too_long(self, _):
         from app.telegram.bot import cmd_repeat
+        from app.config.settings import settings
         update = _make_update()
-        await cmd_repeat(update, _ctx("3", "x" * 2001))
+        await cmd_repeat(update, _ctx("3", "x" * (settings.max_prompt_len + 1)))
         text = update.get_bot().send_message.call_args.kwargs["text"]
         assert "too long" in text.lower() or "max" in text.lower()
 
@@ -636,7 +637,8 @@ class TestHandleTextInputs:
     @patch("app.telegram.bot.get_chat_prefs", new_callable=AsyncMock, return_value={"project_dir": None, "agent": None})
     async def test_prompt_too_long_rejected(self, _):
         from app.telegram.bot import handle_text
-        update = _make_update(text="x" * 2001)
+        from app.config.settings import settings
+        update = _make_update(text="x" * (settings.max_prompt_len + 1))
         await handle_text(update, _ctx())
         text = update.get_bot().send_message.call_args.kwargs["text"]
         assert "too long" in text.lower()
@@ -644,12 +646,13 @@ class TestHandleTextInputs:
     @patch("app.telegram.bot.get_chat_prefs", new_callable=AsyncMock, return_value={"project_dir": None, "agent": None})
     async def test_exactly_max_length_accepted(self, _):
         from app.telegram.bot import handle_text
-        update = _make_update(text="x" * 2000)
+        from app.config.settings import settings
+        update = _make_update(text="x" * settings.max_prompt_len)
         with patch("app.telegram.bot.enqueue_task", new_callable=AsyncMock) as mock_enq:
             task = MagicMock()
             task.id = 1
             task.agent = "opencode"
-            task.prompt = "x" * 2000
+            task.prompt = "x" * settings.max_prompt_len
             task.project_dir = "/tmp/test"
             task.model = None
             task.assigned_to = None
@@ -1234,8 +1237,9 @@ class TestBrokerChainEdges:
 
     async def test_chain_step_prompt_too_long(self, session):
         from app.core.broker import save_chain
+        from app.config.settings import settings
         with pytest.raises(ValueError):
-            await save_chain(name="mychain", steps=[{"prompt": "x" * 2001}])
+            await save_chain(name="mychain", steps=[{"prompt": "x" * (settings.max_prompt_len + 1)}])
 
     async def test_chain_unicode_name(self, session):
         from app.core.broker import save_chain
@@ -1297,18 +1301,20 @@ class TestBrokerRecipeEdges:
 
     async def test_recipe_prefix_too_long(self, session):
         from app.core.broker import save_recipe
+        from app.config.settings import settings
         with pytest.raises(ValueError):
             await save_recipe(
                 name="test", triggers=["t"],
-                prompt_prefix="x" * 2001,
+                prompt_prefix="x" * (settings.max_prompt_len + 1),
             )
 
     async def test_recipe_suffix_too_long(self, session):
         from app.core.broker import save_recipe
+        from app.config.settings import settings
         with pytest.raises(ValueError):
             await save_recipe(
                 name="test", triggers=["t"],
-                prompt_suffix="x" * 2001,
+                prompt_suffix="x" * (settings.max_prompt_len + 1),
             )
 
     async def test_recipe_valid_minimal(self, session):

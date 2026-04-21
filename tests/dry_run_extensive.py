@@ -107,7 +107,7 @@ try:
     from app.telegram.bot import (
         build_app, make_notify_callback, make_chain_notify_callback,
         make_progress_callback, make_typing_callback,
-        MAX_PROMPT_LEN, MAX_MSG_LEN, auth_required,
+        MAX_MSG_LEN, auth_required,
         _status_emoji, _is_allowed_project_dir, _send,
         cmd_start, cmd_help, cmd_status, cmd_queue, cmd_history,
         cmd_cancel, cmd_project, cmd_agent, cmd_output, cmd_retry,
@@ -1079,7 +1079,8 @@ async def test_bot_handlers():
     handlers_tested += 1
 
     # -- Text: too long --
-    update = _make_update(text="x" * (MAX_PROMPT_LEN + 1))
+    from app.config.settings import settings as _settings_ref
+    update = _make_update(text="x" * (_settings_ref.max_prompt_len + 1))
     await handle_text(update, _make_context())
     sent = update.get_bot().send_message.call_args.kwargs["text"]
     check("text too long rejected", "too long" in sent.lower() or "⚠️" in sent, sent[:60])

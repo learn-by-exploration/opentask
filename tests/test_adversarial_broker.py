@@ -512,8 +512,9 @@ class TestChainAdversarial:
     @pytest.mark.asyncio
     async def test_save_step_prompt_too_long(self, _patch):
         from app.core.broker import save_chain
-        with pytest.raises(ValueError, match="2000"):
-            await save_chain("test", [{"prompt": "x" * 2001}])
+        from app.config.settings import settings
+        with pytest.raises(ValueError, match="exceeds"):
+            await save_chain("test", [{"prompt": "x" * (settings.max_prompt_len + 1)}])
 
     @pytest.mark.asyncio
     async def test_save_valid_chain(self, _patch):
@@ -715,14 +716,16 @@ class TestRecipeAdversarial:
     @pytest.mark.asyncio
     async def test_save_prefix_too_long(self, _patch):
         from app.core.broker import save_recipe
-        with pytest.raises(ValueError, match="2000"):
-            await save_recipe("test", ["bug"], prompt_prefix="x" * 2001)
+        from app.config.settings import settings
+        with pytest.raises(ValueError, match="exceeds"):
+            await save_recipe("test", ["bug"], prompt_prefix="x" * (settings.max_prompt_len + 1))
 
     @pytest.mark.asyncio
     async def test_save_suffix_too_long(self, _patch):
         from app.core.broker import save_recipe
-        with pytest.raises(ValueError, match="2000"):
-            await save_recipe("test", ["bug"], prompt_suffix="x" * 2001)
+        from app.config.settings import settings
+        with pytest.raises(ValueError, match="exceeds"):
+            await save_recipe("test", ["bug"], prompt_suffix="x" * (settings.max_prompt_len + 1))
 
     @pytest.mark.asyncio
     async def test_save_valid_recipe(self, _patch):

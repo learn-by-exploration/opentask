@@ -38,6 +38,7 @@ class Settings(BaseSettings):
 
     task_timeout_seconds: int = 1800
     max_queue_size: int = 20
+    max_prompt_len: int = 16000
     progress_interval_seconds: int = 30
 
     db_path: str = "./data/taskpilot.db"

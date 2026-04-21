@@ -197,8 +197,9 @@ class TestSession4ChainValidation:
 
     @pytest.mark.asyncio
     async def test_chain_step_prompt_too_long(self, fresh_db):
-        steps = [{"prompt": "x" * 2001}]
-        with pytest.raises(ValueError, match="2000 chars"):
+        from app.config.settings import settings
+        steps = [{"prompt": "x" * (settings.max_prompt_len + 1)}]
+        with pytest.raises(ValueError, match="chars"):
             await broker_mod.save_chain(name="long-prompt", steps=steps)
 
     @pytest.mark.asyncio

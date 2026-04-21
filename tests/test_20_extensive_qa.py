@@ -188,8 +188,9 @@ class TestQA02InputSanitization:
     @pytest.mark.asyncio
     async def test_very_long_chain_step_prompt_rejected(self, session):
         from app.core.broker import save_chain
-        with pytest.raises(ValueError, match="exceeds 2000"):
-            await save_chain(name="long", steps=[{"prompt": "x" * 2001}])
+        from app.config.settings import settings
+        with pytest.raises(ValueError, match="exceeds"):
+            await save_chain(name="long", steps=[{"prompt": "x" * (settings.max_prompt_len + 1)}])
 
 
 # ═════════════════════════════════════════════════════════════════════

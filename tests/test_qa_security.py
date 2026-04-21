@@ -271,8 +271,9 @@ class TestQA1UnicodeEdgeCases:
 
     @pytest.mark.asyncio
     async def test_chain_step_prompt_2001_rejected(self, fresh_db):
-        steps = [{"prompt": "y" * 2001}]
-        with pytest.raises(ValueError, match="exceeds 2000"):
+        from app.config.settings import settings
+        steps = [{"prompt": "y" * (settings.max_prompt_len + 1)}]
+        with pytest.raises(ValueError, match="exceeds"):
             await broker_mod.save_chain(name="over-2k", steps=steps)
 
 
