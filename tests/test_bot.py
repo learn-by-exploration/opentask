@@ -613,7 +613,8 @@ class TestHandleText:
 
     @patch("app.telegram.bot.get_chat_prefs", new_callable=AsyncMock, return_value={"project_dir": None, "agent": None})
     async def test_too_long_prompt_rejected(self, mock_prefs):
-        update = _make_update(text="x" * 2001)
+        from app.config.settings import settings
+        update = _make_update(text="x" * (settings.max_prompt_len + 1))
         await handle_text(update, _make_context())
         bot = update.get_bot()
         text = bot.send_message.call_args.kwargs["text"]

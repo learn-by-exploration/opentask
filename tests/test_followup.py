@@ -438,7 +438,8 @@ class TestCmdContinue:
     @pytest.mark.asyncio
     async def test_continue_too_long_prompt(self):
         from app.telegram.bot import cmd_continue
-        update = _make_update(text="/continue 1 " + "x" * 2001)
+        from app.config.settings import settings
+        update = _make_update(text="/continue 1 " + "x" * (settings.max_prompt_len + 1))
         await cmd_continue(update, _make_context())
         reply = _get_reply(update)
         assert "too long" in reply
