@@ -238,7 +238,7 @@ def create_dashboard_app() -> FastAPI:
         except Exception:
             return JSONResponse(status_code=400, content={"detail": "Invalid JSON"})
 
-        worker_id = body.get("worker_id", "").strip()
+        worker_id = str(body.get("worker_id", "")).strip()
         if not worker_id or len(worker_id) > 128:
             return JSONResponse(
                 status_code=400,
@@ -277,7 +277,7 @@ def create_dashboard_app() -> FastAPI:
         except Exception:
             return JSONResponse(status_code=400, content={"detail": "Invalid JSON"})
 
-        worker_id = body.get("worker_id", "").strip()
+        worker_id = str(body.get("worker_id", "")).strip()
         if not worker_id:
             return JSONResponse(status_code=400, content={"detail": "worker_id required"})
 
@@ -323,7 +323,7 @@ def create_dashboard_app() -> FastAPI:
         except Exception:
             return JSONResponse(status_code=400, content={"detail": "Invalid JSON"})
 
-        worker_id = body.get("worker_id", "").strip()
+        worker_id = str(body.get("worker_id", "")).strip()
         if not worker_id:
             return JSONResponse(status_code=400, content={"detail": "worker_id required"})
 
