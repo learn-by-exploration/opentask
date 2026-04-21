@@ -13,6 +13,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.config.settings import settings
 from app.core.broker import (
+    cancel_task_by_id,
+    enqueue_task,
     get_chain_by_id,
     get_pending_tasks,
     get_recent_tasks,
@@ -21,6 +23,8 @@ from app.core.broker import (
     list_active_workers,
     list_chains,
     recover_stale_worker_tasks,
+    retry_task,
+    search_tasks,
     worker_claim_task,
     worker_heartbeat,
     worker_submit_result,
@@ -167,6 +171,19 @@ def create_dashboard_app() -> FastAPI:
             )
         return [_task_to_dict(t) for t in tasks]
 
+    @app.get("/api/tasks/search")
+    async def api_search_tasks(q: str = Query(..., min_length=1)) -> list[dict]:
+        """Search tasks by prompt text."""
+        try:
+            tasks = await search_tasks(q)
+        except Exception:
+            _log.exception("Dashboard: error searching tasks")
+            return JSONResponse(  # type: ignore[return-value]
+                status_code=500,
+                content={"detail": "Internal error"},
+            )
+        return [_task_to_dict(t) for t in tasks]
+
     @app.get("/api/tasks/{task_id}")
     async def api_task_detail(task_id: int) -> dict:
         try:
@@ -223,6 +240,81 @@ def create_dashboard_app() -> FastAPI:
         d = _chain_to_dict(chain)
         d["steps"] = chain.steps
         return d
+
+    # ── Task Management API (for OpenClaw / external integrations) ──
+
+    @app.post("/api/tasks")
+    async def api_create_task(request: Request) -> JSONResponse:
+        """Submit a new task to the queue."""
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(status_code=400, content={"detail": "Invalid JSON"})
+
+        prompt = body.get("prompt", "").strip() if isinstance(body.get("prompt"), str) else ""
+        if not prompt:
+            return JSONResponse(status_code=400, content={"detail": "prompt is required"})
+        if len(prompt) > settings.max_prompt_len:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": f"prompt exceeds {settings.max_prompt_len} chars"},
+            )
+
+        project_dir = body.get("project_dir") or None
+        agent = body.get("agent") or None
+        model = body.get("model") or None
+        assigned_to = body.get("assigned_to") or None
+        callback_url = body.get("callback_url") or None
+
+        try:
+            task = await enqueue_task(
+                prompt=prompt,
+                project_dir=project_dir,
+                agent=agent,
+                model=model,
+                assigned_to=assigned_to,
+            )
+        except ValueError as exc:
+            return JSONResponse(status_code=409, content={"detail": str(exc)})
+        except Exception:
+            _log.exception("Dashboard: error creating task")
+            return JSONResponse(status_code=500, content={"detail": "Internal error"})
+
+        result = _task_to_dict(task)
+        result["prompt"] = task.prompt or ""  # full prompt in create response
+        if callback_url:
+            result["callback_url"] = callback_url  # echo back for client tracking
+        return JSONResponse(status_code=201, content=result)
+
+    @app.post("/api/tasks/{task_id}/cancel")
+    async def api_cancel_task(task_id: int) -> JSONResponse:
+        """Cancel a PENDING task."""
+        try:
+            task = await cancel_task_by_id(task_id)
+        except Exception:
+            _log.exception("Dashboard: error cancelling task %s", task_id)
+            return JSONResponse(status_code=500, content={"detail": "Internal error"})
+        if task is None:
+            return JSONResponse(
+                status_code=404,
+                content={"detail": "Task not found or not cancellable"},
+            )
+        return JSONResponse(content=_task_to_dict(task))
+
+    @app.post("/api/tasks/{task_id}/retry")
+    async def api_retry_task(task_id: int) -> JSONResponse:
+        """Retry a FAILED or CANCELLED task."""
+        try:
+            task = await retry_task(task_id)
+        except Exception:
+            _log.exception("Dashboard: error retrying task %s", task_id)
+            return JSONResponse(status_code=500, content={"detail": "Internal error"})
+        if task is None:
+            return JSONResponse(
+                status_code=404,
+                content={"detail": "Task not found or not retryable"},
+            )
+        return JSONResponse(status_code=201, content=_task_to_dict(task))
 
     # ── Worker API (multi-machine) ──────────────────────────────────
 
