@@ -151,7 +151,7 @@ class TestEnqueueTaskModel:
         with _patch_broker_session(engine), \
              patch("app.core.broker._runner_wake", None):
             task = await enqueue_task(prompt="test", project_dir="/tmp", agent="claude", model="sonnet")
-        assert task.model == "sonnet"
+        assert task.model == "anthropic/claude-sonnet-4"
 
     @pytest.mark.asyncio
     async def test_enqueue_empty_model_becomes_none(self, engine):
@@ -171,8 +171,10 @@ class TestEnqueueTaskModel:
             mock_settings.default_project_dir = "/tmp"
             mock_settings.default_agent = "opencode"
             mock_settings.default_model = "opus"
+            mock_settings.cost_budget_daily = 0
+            mock_settings.resolve_model.return_value = "anthropic/claude-opus-4"
             task = await enqueue_task(prompt="test")
-        assert task.model == "opus"
+        assert task.model == "anthropic/claude-opus-4"
 
 
 # ── Broker: switch_task_model ──────────────────────────────────────
@@ -186,7 +188,7 @@ class TestSwitchTaskModel:
             task = await enqueue_task(prompt="test", project_dir="/tmp", agent="claude")
             updated = await switch_task_model(task.id, "opus")
         assert updated is not None
-        assert updated.model == "opus"
+        assert updated.model == "anthropic/claude-opus-4"
 
     @pytest.mark.asyncio
     async def test_switch_model_clear(self, engine):
@@ -289,7 +291,7 @@ class TestApplyRecipeModel:
             task = await enqueue_task(prompt="test", project_dir="/tmp", agent="opencode", model="haiku")
             updated = await _apply_recipe_to_task(task.id, recipe, "enriched")
         assert updated is not None
-        assert updated.model == "haiku"  # original model preserved
+        assert updated.model == "anthropic/claude-haiku-4"  # original model preserved
 
 
 # ── Runner: _build_command with model ──────────────────────────────
@@ -952,10 +954,10 @@ class TestModelIntegration:
         with _patch_broker_session(engine), \
              patch("app.core.broker._runner_wake", None):
             task = await enqueue_task(prompt="test", project_dir="/tmp", agent="claude", model="sonnet")
-            assert task.model == "sonnet"
+            assert task.model == "anthropic/claude-sonnet-4"
 
             updated = await switch_task_model(task.id, "opus")
-            assert updated.model == "opus"
+            assert updated.model == "anthropic/claude-opus-4"
 
             switched = await switch_task_model(task.id, "")
             assert switched.model is None

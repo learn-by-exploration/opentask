@@ -26,6 +26,7 @@ _TASK_SUMMARY_COLUMNS = (
     Task.assigned_to, Task.worker_id, Task.heartbeat_at,
     Task.priority, Task.retry_count, Task.max_retries, Task.git_diff,
     Task.model, Task.fallback_index,
+    Task.timeout_seconds, Task.estimated_cost,
     Task.created_at, Task.started_at, Task.completed_at, Task.duration_seconds,
 )
 

@@ -190,7 +190,7 @@ class TestAutoRetry:
         await complete_task(task.id, exit_code=-1, output_summary="crash", full_output="")
         retry = await auto_retry_task(task.id)
         assert retry is not None
-        assert retry.model == "sonnet"
+        assert retry.model == "anthropic/claude-sonnet-4"
 
     @pytest.mark.asyncio
     async def test_retry_preserves_assigned_to(self, fresh_db):

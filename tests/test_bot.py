@@ -921,7 +921,8 @@ class TestCmdRepeat:
     @patch("app.telegram.bot._load_prefs", new_callable=AsyncMock)
     async def test_repeat_prompt_too_long(self, _):
         update = _make_update()
-        await cmd_repeat(update, _make_context(args=["3", "x" * 2001]))
+        from app.config.settings import settings
+        await cmd_repeat(update, _make_context(args=["3", "x" * (settings.max_prompt_len + 1)]))
         text = update.get_bot().send_message.call_args.kwargs["text"]
         assert "too long" in text.lower()
 

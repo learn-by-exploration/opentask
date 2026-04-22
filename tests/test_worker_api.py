@@ -1144,6 +1144,7 @@ class TestWorkerButtonsInHandleText:
             mock_settings.agent_commands = {"opencode": "opencode run {prompt}"}
             mock_settings.known_workers_list = ["server2", "server3"]
             mock_settings.allowed_user_ids = {12345}
+            mock_settings.max_prompt_len = 16000
 
             update = MagicMock()
             update.effective_user.id = 12345
@@ -1184,6 +1185,7 @@ class TestWorkerButtonsInHandleText:
             mock_settings.agent_commands = {"opencode": "opencode run {prompt}"}
             mock_settings.known_workers_list = []
             mock_settings.allowed_user_ids = {12345}
+            mock_settings.max_prompt_len = 16000
 
             update = MagicMock()
             update.effective_user.id = 12345

@@ -313,14 +313,16 @@ class TestSaveRecipe:
     @pytest.mark.asyncio
     async def test_save_prefix_too_long(self, fresh_db):
         from app.core.broker import save_recipe
+        from app.config.settings import settings
         with pytest.raises(ValueError, match="prompt_prefix"):
-            await save_recipe(name="pfx", triggers=["kw"], prompt_prefix="x" * 2001)
+            await save_recipe(name="pfx", triggers=["kw"], prompt_prefix="x" * (settings.max_prompt_len + 1))
 
     @pytest.mark.asyncio
     async def test_save_suffix_too_long(self, fresh_db):
         from app.core.broker import save_recipe
+        from app.config.settings import settings
         with pytest.raises(ValueError, match="prompt_suffix"):
-            await save_recipe(name="sfx", triggers=["kw"], prompt_suffix="x" * 2001)
+            await save_recipe(name="sfx", triggers=["kw"], prompt_suffix="x" * (settings.max_prompt_len + 1))
 
 
 class TestListRecipes:

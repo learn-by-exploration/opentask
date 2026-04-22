@@ -163,6 +163,72 @@ GALLERY: list[dict] = [
             "prompt_prefix": "You are working on claude-mem — persistent cross-session memory.",
         },
     },
+    {
+        "category": "AI Powerhouse",
+        "name": "autoresearch",
+        "description": "Autonomous ML research — paper discovery, training, analysis",
+        "recipe": {
+            "triggers": ["autoresearch", "ml research", "paper discovery", "training pipeline", "research agent"],
+            "agent": "claude",
+            "project_dir": "/home/shyam/taskpilot/external/ai-powerhouse/autoresearch",
+            "prompt_prefix": "You are working on AutoResearch — autonomous ML research tool for paper discovery, model training, and analysis.",
+        },
+    },
+    {
+        "category": "AI Powerhouse",
+        "name": "claude-task-master",
+        "description": "Task management for AI-driven development",
+        "recipe": {
+            "triggers": ["task master", "taskmaster", "task planning", "task decomposition", "ai tasks"],
+            "agent": "claude",
+            "project_dir": "/home/shyam/taskpilot/external/ai-powerhouse/claude-task-master",
+            "prompt_prefix": "You are working on Claude Task Master — AI-driven task management and planning.",
+        },
+    },
+    {
+        "category": "AI Powerhouse",
+        "name": "ruflo",
+        "description": "Enterprise AI orchestration — multi-agent SPARC, swarm coordination",
+        "recipe": {
+            "triggers": ["ruflo", "sparc", "swarm", "ai orchestration", "multi agent", "claude flow"],
+            "agent": "claude",
+            "project_dir": "/home/shyam/taskpilot/external/ai-powerhouse/ruflo",
+            "prompt_prefix": "You are working on RuFlo v3.5 — enterprise AI orchestration platform with SPARC and swarm coordination.",
+        },
+    },
+    {
+        "category": "AI Powerhouse",
+        "name": "pm-workspace",
+        "description": "Project management workspace — agile, sprints, milestones",
+        "recipe": {
+            "triggers": ["pm workspace", "project management", "agile", "sprints", "milestones", "kanban board"],
+            "agent": "claude",
+            "project_dir": "/home/shyam/taskpilot/external/ai-powerhouse/pm-workspace",
+            "prompt_prefix": "You are working on PM-Workspace — project management with agile workflows and sprint planning.",
+        },
+    },
+    {
+        "category": "AI Powerhouse",
+        "name": "ai-powerhouse-master",
+        "description": "Unified entry point — routes to 279 agents, 365 skills",
+        "recipe": {
+            "triggers": ["ai powerhouse", "master routing", "agent routing", "powerhouse master"],
+            "agent": "claude",
+            "project_dir": "/home/shyam/taskpilot/external/ai-powerhouse/master",
+            "prompt_prefix": "You are working on the AI Powerhouse master — unified agent routing across all tools.",
+        },
+    },
+    {
+        "category": "AI Powerhouse",
+        "name": "ui-ux-pro-max",
+        "description": "UI/UX design skills — 50+ styles, 161 palettes, 57 font pairings",
+        "recipe": {
+            "triggers": ["ui ux", "uiux", "design system", "ui design", "ux design", "pro max"],
+            "agent": "claude",
+            "project_dir": "/home/shyam/taskpilot/external/ai-powerhouse/ui-ux-pro-max-skill",
+            "prompt_prefix": "You are working on UI/UX Pro Max — comprehensive design skills for web and mobile.",
+        },
+    },
 
     # ── General Dev Workflows ───────────────────────────────────────
     {

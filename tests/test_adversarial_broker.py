@@ -94,7 +94,7 @@ class TestEnqueueAdversarial:
     async def test_enqueue_with_model(self, _patch):
         from app.core.broker import enqueue_task
         task = await enqueue_task("test", "/tmp", "opencode", model="opus")
-        assert task.model == "opus"
+        assert task.model == "anthropic/claude-opus-4"
 
     @pytest.mark.asyncio
     async def test_enqueue_with_empty_model(self, _patch):
@@ -316,7 +316,7 @@ class TestRetryBrokerAdversarial:
         assert new_task is not None
         assert new_task.id != task.id
         assert new_task.prompt == task.prompt
-        assert new_task.model == "sonnet"
+        assert new_task.model == "anthropic/claude-sonnet-4"
 
     @pytest.mark.asyncio
     async def test_retry_cancelled(self, _patch):
@@ -1057,7 +1057,7 @@ class TestFollowupBrokerAdversarial:
         await complete_task(task.id, 0, "ok", "output")
         followup = await enqueue_followup(task.id, "follow up")
         assert followup.parent_task_id == task.id
-        assert followup.model == "sonnet"
+        assert followup.model == "anthropic/claude-sonnet-4"
 
     @pytest.mark.asyncio
     async def test_valid_followup_on_failed(self, _patch):

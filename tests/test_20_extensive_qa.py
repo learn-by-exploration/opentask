@@ -1320,7 +1320,7 @@ class TestQA20DataIntegrity:
     async def test_get_chat_prefs_nonexistent_returns_defaults(self, session):
         from app.core.broker import get_chat_prefs
         prefs = await get_chat_prefs(88888)
-        assert prefs == {"project_dir": None, "agent": None, "model": None}
+        assert prefs == {"project_dir": None, "agent": None, "model": None, "smart_mode": False}
 
     @pytest.mark.asyncio
     async def test_set_and_get_chat_prefs(self, session):

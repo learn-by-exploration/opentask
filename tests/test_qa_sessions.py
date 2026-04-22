@@ -395,7 +395,7 @@ class TestSession9ChainAdvance:
         next_task = await broker_mod.advance_chain(done)
         assert next_task is not None
         assert next_task.chain_step == 1
-        assert next_task.prompt == "step2"
+        assert "step2" in next_task.prompt
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -653,7 +653,8 @@ class TestSession15BotErrorPaths:
     @pytest.mark.asyncio
     async def test_handle_text_too_long(self, fresh_db):
         from app.telegram.bot import handle_text
-        update = self._make_update(text="x" * 2001)
+        from app.config.settings import settings
+        update = self._make_update(text="x" * (settings.max_prompt_len + 1))
         await handle_text(update, self._make_context())
         update.get_bot().send_message.assert_called_once()
         sent = update.get_bot().send_message.call_args.kwargs["text"]

@@ -70,7 +70,7 @@ class TestCreateTask:
         assert resp.status_code == 201
         data = resp.json()
         assert data["agent"] == "claude"
-        assert data["model"] == "sonnet"
+        assert data["model"] == "anthropic/claude-sonnet-4"
         assert data["assigned_to"] == "worker1"
 
     @pytest.mark.asyncio

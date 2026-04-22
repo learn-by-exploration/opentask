@@ -90,6 +90,7 @@ Remote machines can claim and execute tasks via the Worker API:
 ```bash
 source .venv/bin/activate
 make test              # or: pytest tests/ -v
+python3 tests/dry_run_20x.py --rounds 20   # 20-round stress test (all 3700+ tests × 20)
 ```
 
 ## Environment Variables

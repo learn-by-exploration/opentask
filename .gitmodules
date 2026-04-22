@@ -1,0 +1,3 @@
+[submodule "external/ai-powerhouse"]
+	path = external/ai-powerhouse
+	url = git@github.com:learn-by-exploration/ai-powerhouse.git

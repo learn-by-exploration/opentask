@@ -1087,7 +1087,7 @@ class TestBrokerEnqueueEdges:
         task = await enqueue_task(
             prompt="test", project_dir="/tmp", agent="opencode", model="opus",
         )
-        assert task.model == "opus"
+        assert task.model == "anthropic/claude-opus-4"
 
     async def test_enqueue_with_none_model(self, session):
         from app.core.broker import enqueue_task
